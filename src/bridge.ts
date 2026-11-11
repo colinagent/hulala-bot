@@ -13,9 +13,8 @@ import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { SessionFollowFrame, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/types'
-import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { expandHome, type BridgeConfig } from './config.ts'
-import { attach, endpointPath, readEndpoint, type HostBackend } from './host/attach.ts'
+import type { HostBackend } from './host/backend.ts'
 import { TurnTracker } from './host/turn.ts'
 import { Log } from './log.ts'
 import { toMarkdownV2 } from './render/markdown.ts'
@@ -73,6 +72,11 @@ interface Pending {
 }
 
 /** Terminal abstraction over Host RPC results. */
+/** Envelope every Remote call returns; only these fields matter here. */
+type RemoteResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: { readonly message?: string; readonly code?: string } }
+
 function unwrap<T>(result: RemoteResult<T>): T {
   if (!result.ok) {
     const failure = result.error as { message?: string; code?: string }
@@ -128,7 +132,9 @@ export class Bridge {
     this.#ledger = options.ledger
     this.#bindings = options.bindings
     this.#log = options.log
-    this.#connect = options.connect ?? (async () => attach(await readEndpoint(endpointPath())))
+    this.#connect = options.connect ?? (async () => {
+      throw new Error('no Host backend: the bridge runs as a Host plugin, not as a separate process')
+    })
   }
 
   /** Connect, publish the command menu, and start long polling. */
@@ -357,8 +363,8 @@ export class Bridge {
   /** One mounted session's Host summary. */
   async #summary(sessionId: string): Promise<SessionSummary | undefined> {
     const backend = await this.#ensureHost()
-    const items = unwrap(await backend.ctx.remote.session.list({})).items
-    return items.find(item => item.sessionId === sessionId)
+    const items = unwrap(await backend.ctx.remote.session.list({})) as { items: SessionSummary[] }
+    return items.items.find(item => item.sessionId === sessionId)
   }
 
   /** Human-readable state of one conversation's mount. */
@@ -385,7 +391,8 @@ export class Bridge {
   /** Recently used working directories, newest first. */
   async #recentDirectories(): Promise<readonly string[]> {
     const backend = await this.#ensureHost()
-    const items = unwrap(await backend.ctx.remote.session.list({})).items
+    const listed = unwrap(await backend.ctx.remote.session.list({})) as { items: SessionSummary[] }
+    const items = listed.items
       .filter(item => item.origin !== 'subagent' && typeof item.cwd === 'string')
       .sort((left, right) => right.updatedAt - left.updatedAt)
     const seen = new Set<string>()
@@ -505,13 +512,14 @@ export class Bridge {
     }
     const backend = await this.#ensureHost()
     const remote = backend.ctx.remote
-    const workspaceId = unwrap(await remote.workspace.create({ path })).workspace.workspaceId
-    const items = unwrap(await remote.session.list({})).items
+    const workspaceId = (unwrap(await remote.workspace.create({ path })) as { workspace: { workspaceId: string } }).workspace.workspaceId
+    const listed = unwrap(await remote.session.list({})) as { items: SessionSummary[] }
+    const items = listed.items
       .filter(item => item.origin !== 'subagent' && item.cwd === path)
       .sort((left, right) => right.updatedAt - left.updatedAt)
     const existing = items[0]
     const sessionId = existing === undefined
-      ? unwrap(await remote.session.create({ workspaceId: workspaceId as never })).sessionId
+      ? (unwrap(await remote.session.create({ workspaceId: workspaceId as never })) as { sessionId: string }).sessionId
       : existing.sessionId
     await this.#mount(key, sessionId)
     await this.#say(key, existing === undefined
@@ -526,8 +534,8 @@ export class Bridge {
     const current = this.#bindings.get(key)
     const summary = current === undefined ? undefined : await this.#summary(current).catch(() => undefined)
     const path = summary?.cwd ?? this.#config.defaultCwd
-    const workspaceId = unwrap(await remote.workspace.create({ path })).workspace.workspaceId
-    const sessionId = unwrap(await remote.session.create({ workspaceId: workspaceId as never })).sessionId
+    const workspaceId = (unwrap(await remote.workspace.create({ path })) as { workspace: { workspaceId: string } }).workspace.workspaceId
+    const sessionId = (unwrap(await remote.session.create({ workspaceId: workspaceId as never })) as { sessionId: string }).sessionId
     await this.#mount(key, sessionId)
     await this.#say(key, `已新建会话，目录 ${path}。`)
   }
@@ -535,7 +543,8 @@ export class Bridge {
   /** List recent sessions and remember their order for `/switch`. */
   async #listSessions(key: ChatKey): Promise<void> {
     const backend = await this.#ensureHost()
-    const items = unwrap(await backend.ctx.remote.session.list({})).items
+    const listed = unwrap(await backend.ctx.remote.session.list({})) as { items: SessionSummary[] }
+    const items = listed.items
       .filter(item => item.origin !== 'subagent')
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, 10)
@@ -617,12 +626,13 @@ export class Bridge {
     const backend = await this.#ensureHost()
     const remote = backend.ctx.remote
     const path = this.#config.defaultCwd
-    const workspaceId = unwrap(await remote.workspace.create({ path })).workspace.workspaceId
-    const items = unwrap(await remote.session.list({})).items
+    const workspaceId = (unwrap(await remote.workspace.create({ path })) as { workspace: { workspaceId: string } }).workspace.workspaceId
+    const listed = unwrap(await remote.session.list({})) as { items: SessionSummary[] }
+    const items = listed.items
       .filter(item => item.origin !== 'subagent' && item.cwd === path)
       .sort((left, right) => right.updatedAt - left.updatedAt)
     const sessionId = items[0]?.sessionId
-      ?? unwrap(await remote.session.create({ workspaceId: workspaceId as never })).sessionId
+      ?? (unwrap(await remote.session.create({ workspaceId: workspaceId as never })) as { sessionId: string }).sessionId
     this.#defaultSession = sessionId
     return sessionId
   }

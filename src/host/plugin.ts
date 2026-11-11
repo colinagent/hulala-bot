@@ -23,6 +23,7 @@ import { Bindings } from '../store/bindings.ts'
 import { acquireLock } from '../store/lock.ts'
 import { TelegramApi } from '../telegram/api.ts'
 import { UpdateLedger } from '../telegram/ledger.ts'
+import type { HostBackend } from './backend.ts'
 import { createLocalRemote } from './local-remote.ts'
 
 /** Stable Cordis plugin name. */
@@ -73,7 +74,7 @@ async function start(ctx: Context, stateDir: string): Promise<() => Promise<void
   const ledger = await UpdateLedger.open(`${config.stateDir}/receipts/telegram_update_receipts.json`)
   const remote = createLocalRemote(ctx)
   const connect: HostConnect = async () => ({
-    ctx: { remote } as unknown as Context,
+    ctx: { remote } as unknown as HostBackend['ctx'],
     close: async () => undefined,
   })
   const bridge = new Bridge({ config, api, ledger, bindings, log, connect })

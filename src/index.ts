@@ -1,87 +1,41 @@
 /**
- * Entry point: one bridge process for one Host.
+ * Entry point: setup for the Host plugin.
  *
- * Setup is deliberately boring: read configuration, open the Bot API client,
- * load the receipt ledger and the mount table, then hand the process to the
- * bridge. Shutdown is a signal away.
+ * The bridge itself is a Host plugin (`src/host/plugin.ts`), loaded by whichever
+ * Host installed the bundle. This binary exists for the one thing that cannot be
+ * done from inside a running Host: writing the configuration file a plugin has
+ * no terminal to ask about.
+ *
+ *     dsh plugin --profile tui exec dsh-telegram --init
+ *     hulala plugin --profile tui exec dsh-telegram --init
  *
  * @module dsh-telegram/index
  */
-import { loadConfig, loadToken } from './config.ts'
 import { runInit } from './init.ts'
-import { Bridge } from './bridge.ts'
-import { attach, endpointPath, readEndpoint } from './host/attach.ts'
-import { Log } from './log.ts'
-import { Bindings } from './store/bindings.ts'
-import { acquireLock } from './store/lock.ts'
-import { TelegramApi } from './telegram/api.ts'
-import { UpdateLedger } from './telegram/ledger.ts'
 
-/**
- * Prove this build can talk to the Host: attach, read the session list, and
- * register the two waterfall events. Needs no bot token and sends nothing.
- */
-async function selfCheck(): Promise<void> {
-  // Telegram first: a blocked network is the failure that looks like nothing
-  // happening, and it says nothing about the Host.
-  try {
-    const { token, baseUrl } = await loadToken()
-    const api = new TelegramApi({ token, baseUrl })
-    const me = await api.call<{ username?: string }>('getMe')
-    console.log(`ok: bot @${me.username ?? '?'} reachable`)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    console.log(`warn: Telegram not reachable (${message})`)
-    console.log('      if this machine needs a proxy, run with NODE_USE_ENV_PROXY=1')
-  }
-  const backend = await attach(await readEndpoint(endpointPath()))
-  try {
-    const listed = await backend.ctx.remote.session.list({})
-    if (!listed.ok) throw new Error(`session.list failed: ${JSON.stringify(listed.error)}`)
-    const events = backend.ctx.remote as unknown as { $on(name: string, handler: () => Promise<string>): () => void }
-    events.$on('approval/request', async () => 'unavailable')
-    events.$on('user-questions/request', async () => 'unavailable')
-    console.log(`ok: Host ${backend.endpoint?.version ?? '?'}, ${String(listed.value.items.length)} sessions, interactions=answer`)
-  } finally {
-    await backend.close()
-  }
-}
+const arguments_ = process.argv.slice(2)
 
-if (process.argv.includes('--init')) {
-  // Setup is a one-shot: never fall through into polling.
-  process.exit(await runInit(process.argv.slice(process.argv.indexOf('--init') + 1)))
-} else if (process.argv.includes('--self-check')) {
-  await selfCheck()
+if (arguments_.includes('--help') || arguments_.length === 0) {
+  console.log([
+    'dsh-telegram — Telegram bridge for DeepSeek Harness',
+    '',
+    'This package runs inside a Host as a plugin. The only command here writes',
+    'the configuration that plugin needs:',
+    '',
+    '  dsh-telegram --init --allowed-user <telegram id> [--token-ref telegram/bot-token]',
+    '  dsh-telegram --init --no-input ...        # never prompt',
+    '',
+    'Install it with one of:',
+    '  dsh plugin --profile tui add @colinagent/dsh-telegram',
+    '  hulala plugin --profile tui add @colinagent/dsh-telegram',
+  ].join('\n'))
   process.exit(0)
 }
 
-/** Start the bridge and keep the process alive until a signal arrives. */
-async function main(): Promise<void> {
-  const config = await loadConfig()
-  const release = await acquireLock(config.token)
-  const log = new Log(config.stateDir, config.token)
-  const api = new TelegramApi({ token: config.token, baseUrl: config.baseUrl })
-  const bindings = await Bindings.open(config.stateDir)
-  const ledger = await UpdateLedger.open(`${config.stateDir}/receipts/telegram_update_receipts.json`)
-  const bridge = new Bridge({ config, api, ledger, bindings, log })
-
-  const shutdown = async (signal: string): Promise<void> => {
-    log.info(`${signal}: shutting down`)
-    // Never let a stuck connection keep the process from exiting.
-    await Promise.race([bridge.stop(), new Promise(settle => setTimeout(settle, 5000))])
-    await release()
-    process.exit(0)
-  }
-  process.once('SIGINT', () => { void shutdown('SIGINT') })
-  process.once('SIGTERM', () => { void shutdown('SIGTERM') })
-
-  log.info(`bridge starting; state ${config.stateDir}`)
-  await bridge.start()
+if (arguments_.includes('--init')) {
+  // Setup is a one-shot: never fall through into something long-running.
+  process.exit(await runInit(arguments_.slice(arguments_.indexOf('--init') + 1)))
 }
 
-try {
-  await main()
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exit(1)
-}
+console.error(`unknown arguments: ${arguments_.join(' ')}\ntry --help`)
+process.exit(1)

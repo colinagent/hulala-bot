@@ -6,14 +6,7 @@
 
 ## 它是什么
 
-一套 Telegram 逻辑，两种接进 Host 的方式，都改不到 DSH 一行代码：
-
-| 形态 | 用在 | 怎么进去 |
-|---|---|---|
-| **插件**（宿主内） | DSH 原生 Web / Desktop / TUI | `dsh plugin --profile tui add @colinagent/dsh-telegram` |
-| **peer**（独立进程） | 任意 Host | `node src/index.ts`，发现 `endpoint.json` 后 attach |
-
-插件形态里，桥直接调宿主服务，**没有端口、token、cookie、WebSocket**：
+**一个 Host 插件**，改不到 DSH 一行代码。它跑在 Host 进程里，直接调宿主服务：
 
 ```
 ctx.sessionController.list / create / prompt / follow   → 会话与流式
@@ -21,18 +14,11 @@ ctx.workspaceController.create                          → 工作目录
 ctx.on('approval/request', (req, next) => …)            → 审批
 ```
 
-peer 形态里，同样四件事走载体：
+没有端口、token、cookie、WebSocket：插件就在 Host 里，`/cwd`、流式回复、审批都不需要
+跨进程通信。会话历史、cwd、模型、权限以 Host 为真源；这里只保存「哪个对话挂了哪个会话」。
 
-```
-GET /connect?token=…&interactions=answer   → cookie
-ctx.remote.$mount(Session, Workspace)      → 会话与工作区
-ctx.remote.$on('approval/request')         → 审批
-session.follow({ assistantStream: true })  → 流式回复
-```
-
-会话历史、cwd、模型、权限之外的一切都以 Host 为真源；这里只保存「哪个对话挂了哪个会话」。
-
-**多端同时在线是正常的**：TUI 和手机可以挂同一个会话，两边看到同一段历史。peer 形态下审批同时出现在两端，谁先点生效，另一端卡片自动变成「已在其他端处理」；插件形态下审批由 Host 内直接应答，没有跨端撤回。
+**多端同时在线是正常的**：TUI 和手机可以挂同一个会话，两边看到同一段历史。审批由 Host
+内应答；如果 TUI 也开着，先答的生效。
 
 ## 安装
 
@@ -81,24 +67,10 @@ hulala plugin --profile tui exec dsh-telegram --init
 `~/.dsh/profiles/<同名>/package.json`，把用户额外装的 bundle 链接进自己的组合，所以不
 需要再装一遍。反过来不成立——呼啦啦里装的插件不会出现在 DSH 里。
 
-### 不用插件：独立进程
-
-不想装进 Host 时，桥可以作为一个 peer 进程跑，连到正在运行的 Host：
-
-```sh
-node src/index.ts                 # 或 node dist/index.mjs
-node src/index.ts --self-check    # 只验证配置、Bot API 和 Host 连通性，不发消息
-```
-
-peer 形态用 `~/.hulala/config/dsh-telegram/` 作为状态目录，从
-`~/.hulala/server/host/endpoint.json` 发现 Host，不会自己拉起 Host。
-
 ## 配置在哪
 
-| 形态 | 状态目录 |
-|---|---|
-| 插件 | `$DSH_HOME/config/dsh-telegram/`（DSH 是 `~/.dsh`，呼啦啦是 `~/.hulala/harness`） |
-| peer | `~/.hulala/config/dsh-telegram/` |
+状态目录是 `$DSH_HOME/config/dsh-telegram/`（DSH 是 `~/.dsh`，呼啦啦是
+`~/.hulala/harness`）。
 
 `config.json`、`bindings.json`、`receipts/`、`logs/` 都在里面，权限 `0600`/`0700`。
 轮询锁不在其中：它按 bot token 的摘要放在 `~/.dsh-telegram/<hash>.lock`，所以 DSH 和
@@ -135,7 +107,8 @@ secret-tool store --label 'telegram bot' service telegram account bot-token
 
 ## 配置
 
-默认读 `~/.hulala/config/dsh-telegram/config.json`（可用 `HULALA_TELEGRAM_CONFIG` 覆盖）：
+默认读 `$DSH_HOME/config/dsh-telegram/config.json`（DSH 是 `~/.dsh`，呼啦啦是
+`~/.hulala/harness`；可用 `HULALA_TELEGRAM_CONFIG` 覆盖）：
 
 ```json
 {
@@ -159,30 +132,31 @@ secret-tool store --label 'telegram bot' service telegram account bot-token
 
 状态文件同目录：`bindings.json`（挂载表）、`receipts/`（入站去重账本，24h TTL）、`logs/`。全部 `0600`，token 不进日志。
 
-## 运行（peer 形态）
+## 运行
 
-插件形态不用这一步：装完之后桥跟着 Host 起落，配置读 `$DSH_HOME/config/dsh-telegram/`。下面是独立进程形态。
+装好之后桥随 Host 起落，不需要单独启动。日志里出现 `bridge starting inside the Host`
+就是已经在轮询了。
 
-```bash
-node src/index.ts                        # 开发
-NODE_USE_ENV_PROXY=1 node src/index.ts   # 需要走本机代理时（见下）
-node src/index.ts --self-check           # 只验证连通性，不发任何消息
-bun run build && node dist/index.mjs     # 打成一个文件再跑
-```
+**一个 bot token 只能有一个轮询者，跨 home 生效**：锁按 token 的摘要放在
+`~/.dsh-telegram/<hash>.lock`，不在任何一个 home 里。所以 DSH（`~/.dsh`）和呼啦啦
+（`~/.hulala/harness`）两边都装了插件时，第二个会报
+`already being polled by another Host (pid …)` 并待命，而不是两边抢到 409、随机丢消息。
 
-**一个 bot token 只能有一个轮询者，跨 home 生效**：锁按 token 的摘要放在 `~/.dsh-telegram/<hash>.lock`，不在任何一个 home 里。所以 DSH（`~/.dsh`）和呼啦啦（`~/.hulala/harness`）两边都装了插件时，第二个会报 `already being polled by another Host (pid …)` 并待命，而不是两边抢到 409、随机丢消息。
-
-`--self-check` 会先 `getMe` 验 Telegram，再 attach Host、读会话列表、注册两个 waterfall 事件，然后退出。升级 Host、换机器、或「发了消息没反应」时先跑它。它只覆盖 peer 形态；插件形态用 `node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>` 对一个真 profile 跑一遍。
+排查时先看 Host 日志里有没有 `dsh-telegram` 开头的行；想对真实 Host 跑一遍，用
+`node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>`。
 
 ### 网络：DNS 污染与代理
 
-`api.telegram.org` 在部分网络下会被污染到无关 IP，直连必然失败。Node 的 `fetch` 默认**不读** `HTTP_PROXY`/`HTTPS_PROXY`；Node ≥ 24 用环境变量代理要显式开启：
+`api.telegram.org` 在部分网络下会被污染到无关 IP，直连必然失败。Node 的 `fetch` 默认**不读**
+`HTTP_PROXY`/`HTTPS_PROXY`；Node ≥ 24 用环境变量代理要显式开启。插件跑在 Host 进程里，
+所以这个变量要加在**启动 Host 的环境**上：
 
 ```bash
-NODE_USE_ENV_PROXY=1 node src/index.ts
+NODE_USE_ENV_PROXY=1 dsh --profile tui
+NODE_USE_ENV_PROXY=1 hulala
 ```
 
-`no_proxy` 里的 `127.0.0.1` 会让访问 Host 的 loopback 请求绕过代理，所以两者可以共存。没有代理的机器上这个开关是无害的。
+没有代理的机器上这个开关是无害的。
 
 ## 命令
 
@@ -218,24 +192,22 @@ NODE_USE_ENV_PROXY=1 node src/index.ts
 
 ## 与 Host 版本的关系
 
-两种形态的约束机制**不同**，别拿一个的结论套另一个。
+包按 `package.json` 的 `engines.dsh` 声明范围（当前 `>=0.2.2-rc.1 <0.3.0`）。装载器在
+**导入模块之前**比较，不满足就跳过该层并在 `skippedBundles` 里报出包名、版本和原因，
+Host 的其余部分照常启动。DSH 包是 peer 依赖，解析到宿主那一份，不会出现第二个注册表。
 
-| | 怎么绑定版本 | 不匹配时 | 怎么自查 |
-|---|---|---|---|
-| **插件** | `package.json` 的 `engines.dsh`（当前 `>=0.2.2-rc.1 <0.3.0`），装载器在**导入模块之前**比较；DSH 包是 peer 依赖，解析到宿主那一份 | 组合层被跳过，`skippedBundles` 报出包名、版本和原因；Host 其余部分照常启动 | `dsh <profile> --dump-config` 里有没有 `# == dsh-telegram`；日志有没有 `skippedBundles` |
-| **peer** | 发现文件里的 `protocol`（当前 `2`），由 Hulala 的 `hulalaHost` 写入 | `readEndpoint()` 直接报错并说明要更新哪一端，不会带着半个连接跑 | `node src/index.ts --self-check` |
-
-插件形态还依赖 DSH 的**服务面**（`sessionController` 的 `list/create/prompt/follow`、`workspaceController.create`、`approval/request` 的 waterfall 语义），peer 形态依赖**载体面**（`/connect`、cookie、`/api/remote.mux`、`$mount` 的命名空间）。前者随 DSH minor 变，后者随 Hulala 的发现协议变。
+自查：`dsh <profile> --dump-config` 里有没有 `# == dsh-telegram`，以及日志里有没有
+`skippedBundles`。
 
 ## 开发
 
 ```bash
-node --test "tests/*.test.ts"   # 45 个用例：纯逻辑 + 用假 Host 和假 Bot API 跑完整桥
-node scripts/smoke.ts           # 对着本机真 Host 跑一轮（需要 Host 在跑）
-node scripts/smoke-question.ts  # 验证 waterfall 真的送到 peer
+node --test "tests/*.test.ts"                                  # 73 个用例
+node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # 对真 Host 跑一轮
 ```
 
-`tests/fakes.ts` 里的假 Host 实现了 bridge 用到的那几个 Remote 方法，所以桥的行为可以在没有 Host、没有网络、没有 token 的情况下测。
+`tests/fakes.ts` 里的假 Host 实现了 bridge 用到的那几个 Remote 方法，所以桥的行为可以在
+没有 Host、没有网络、没有 token 的情况下测。
 
 ## 许可
 

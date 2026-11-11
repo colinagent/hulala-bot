@@ -1,6 +1,6 @@
 {
   "name": "@colinagent/dsh-telegram",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "GPL-3.0-only",
   "type": "module",
   "engines": {
@@ -18,8 +18,7 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "@deepseek-ai/cordis": "4.1.0",
-    "ws": "^8.18.0"
+    "@deepseek-ai/cordis": "4.1.0"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.1",
@@ -31,7 +30,6 @@
     "@deepseek-ai/dsh-typert-registry": "0.2.2-rc.1",
     "@deepseek-ai/schemastery": "~3.19.0",
     "@types/node": "^22.10.0",
-    "@types/ws": "^8.5.13",
     "typescript": "^5.7.0"
   },
   "peerDependencies": {
