@@ -1,6 +1,8 @@
 # dsh-telegram
 
-把这个机器上的 Hulala agent 接到 Telegram 上。手机发一句话，本机的 Host 执行，回复流式回到同一个对话；`/cwd` 切换这个对话挂载哪个会话——和 TUI 里切换会话是同一件事。
+把这个机器上的 DeepSeek Harness agent 接到 Telegram 上。手机发一句话，本机的 Host 执行，回复流式回到同一个对话；`/cwd` 切换这个对话挂载哪个会话——和 TUI 里切换会话是同一件事。
+
+两种 Host 都能接：**DSH 原生**装成插件，**Hulala** 跑成独立进程。
 
 ## 它是什么
 
@@ -38,6 +40,8 @@ session.follow({ assistantStream: true })  → 流式回复
 dsh plugin add dsh-telegram --profile desktop   # 或 web / tui
 ```
 
+装完 `dsh plugin --profile desktop list` 能看到它；`dsh desktop --dump-config` 里会多一行 `# == dsh-telegram`。卸载就是 `dsh plugin --profile desktop remove dsh-telegram`，桥和它的状态目录一起消失。
+
 它按 `engines.dsh` 声明兼容范围（当前 `>=0.2.2-rc.1 <0.3.0`），Host 启动时检查，不匹配就跳过并报出原因，不会带着半份装配跑起来。状态在 `$DSH_HOME/config/dsh-telegram/`，bot token 仍然只在系统钥匙串里。
 
 自检（不动 Host，只看配置和 Bot API）：
@@ -50,8 +54,10 @@ node src/index.ts --self-check
 
 1. 一个 bot：跟 [@BotFather](https://t.me/BotFather) 说 `/newbot`，拿到 token。
 2. 你自己的 Telegram user id（可以问 [@userinfobot](https://t.me/userinfobot)）。
-3. 机器上跑着 Hulala Host（从 TUI 或 `hulala start` 起来）。
-4. Node.js ≥ 23.6（直接用 Node 的类型剥离跑 `.ts` 源码）。
+3. 一个正在运行的 Host，二选一：
+   - **DSH 原生**：`dsh plugin add dsh-telegram --profile <desktop|web|tui>`，桥随 Host 一起起；
+   - **Hulala**：从 TUI 或 `hulala start` 起来，桥用手动方式另起（见下）。
+4. Node.js ≥ 22.6（直接用 Node 的类型剥离跑 `.ts` 源码）。
 
 token 放系统钥匙串，不写配置文件：
 
@@ -94,7 +100,9 @@ secret-tool store --label 'telegram bot' service telegram account bot-token
 
 状态文件同目录：`bindings.json`（挂载表）、`receipts/`（入站去重账本，24h TTL）、`logs/`。全部 `0600`，token 不进日志。
 
-## 运行
+## 运行（peer 形态）
+
+插件形态不用这一步：`dsh plugin add` 之后桥跟着 Host 起落，配置读 `$DSH_HOME/config/dsh-telegram/`。下面是独立进程形态。
 
 ```bash
 node src/index.ts                        # 开发
@@ -105,7 +113,7 @@ bun run build && node dist/index.mjs     # 打成一个文件再跑
 
 一个状态根只能跑一个桥：启动时写 `bridge.lock`，再启一个会直接报 `another bridge is already running (pid …)`。两个进程抢同一个 token 会让 Telegram 回 409，并把消息随机丢给其中一个。
 
-`--self-check` 会先 `getMe` 验 Telegram，再 attach Host、读会话列表、注册两个 waterfall 事件，然后退出。升级 Host、换机器、或「发了消息没反应」时先跑它。
+`--self-check` 会先 `getMe` 验 Telegram，再 attach Host、读会话列表、注册两个 waterfall 事件，然后退出。升级 Host、换机器、或「发了消息没反应」时先跑它。它只覆盖 peer 形态；插件形态用 `node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>` 对一个真 profile 跑一遍。
 
 ### 网络：DNS 污染与代理
 
