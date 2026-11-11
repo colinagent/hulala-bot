@@ -1,6 +1,6 @@
 {
   "name": "@colinagent/dsh-telegram",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "GPL-3.0-only",
   "type": "module",
   "engines": {
@@ -22,9 +22,6 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "@types/ws": "^8.5.13",
-    "typescript": "^5.7.0",
     "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.1",
     "@deepseek-ai/dsh-api-remotes": "0.2.2-rc.1",
     "@deepseek-ai/dsh-api-session-controller": "0.2.2-rc.1",
@@ -32,7 +29,10 @@
     "@deepseek-ai/dsh-client-connection": "0.2.2-rc.1",
     "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1",
     "@deepseek-ai/dsh-typert-registry": "0.2.2-rc.1",
-    "@deepseek-ai/schemastery": "~3.19.0"
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.1",
