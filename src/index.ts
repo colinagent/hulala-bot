@@ -7,7 +7,7 @@
  *
  * @module dsh-telegram/index
  */
-import { loadConfig } from './config.ts'
+import { loadConfig, loadToken } from './config.ts'
 import { Bridge } from './bridge.ts'
 import { attach, endpointPath, readEndpoint } from './host/attach.ts'
 import { Log } from './log.ts'
@@ -20,6 +20,18 @@ import { UpdateLedger } from './telegram/ledger.ts'
  * register the two waterfall events. Needs no bot token and sends nothing.
  */
 async function selfCheck(): Promise<void> {
+  // Telegram first: a blocked network is the failure that looks like nothing
+  // happening, and it says nothing about the Host.
+  try {
+    const { token, baseUrl } = await loadToken()
+    const api = new TelegramApi({ token, baseUrl })
+    const me = await api.call<{ username?: string }>('getMe')
+    console.log(`ok: bot @${me.username ?? '?'} reachable`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.log(`warn: Telegram not reachable (${message})`)
+    console.log('      if this machine needs a proxy, run with NODE_USE_ENV_PROXY=1')
+  }
   const backend = await attach(await readEndpoint(endpointPath()))
   try {
     const listed = await backend.ctx.remote.session.list({})

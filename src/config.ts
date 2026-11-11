@@ -93,11 +93,29 @@ async function readKeychain(ref: string): Promise<string | undefined> {
 }
 
 /**
- * Load and validate the bridge configuration.
- * @param env - process environment; tests inject their own.
- * @returns the resolved configuration.
+ * Resolve the bot token from its reference, the environment, or the keychain.
+ * @param raw - configuration document.
+ * @param env - process environment.
+ * @param file - path used in the error message.
+ * @returns the token.
  */
-export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<BridgeConfig> {
+async function resolveToken(raw: BridgeConfigFile, env: NodeJS.ProcessEnv, file: string): Promise<string> {
+  const token = raw.token
+    ?? (raw.tokenEnv === undefined ? undefined : env[raw.tokenEnv])
+    ?? env.TELEGRAM_BOT_TOKEN
+    ?? (raw.tokenRef === undefined ? undefined : await readKeychain(raw.tokenRef))
+  if (token === undefined || token.trim() === '') {
+    throw new Error(`no bot token: set tokenRef in ${file}, or TELEGRAM_BOT_TOKEN in the environment`)
+  }
+  return token
+}
+
+/**
+ * Read the configuration file, tolerating its absence.
+ * @param env - process environment.
+ * @returns the raw document.
+ */
+async function readFileConfig(env: NodeJS.ProcessEnv): Promise<{ raw: BridgeConfigFile; file: string; stateDir: string }> {
   const stateDir = env.HULALA_TELEGRAM_STATE ?? bridgeStateDir(env)
   const file = env.HULALA_TELEGRAM_CONFIG ?? join(stateDir, 'config.json')
   let raw: BridgeConfigFile = {}
@@ -106,14 +124,31 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
+  return { raw, file, stateDir }
+}
 
-  const token = raw.token
-    ?? (raw.tokenEnv === undefined ? undefined : env[raw.tokenEnv])
-    ?? env.TELEGRAM_BOT_TOKEN
-    ?? (raw.tokenRef === undefined ? undefined : await readKeychain(raw.tokenRef))
-  if (token === undefined || token.trim() === '') {
-    throw new Error(`no bot token: set tokenRef in ${file}, or TELEGRAM_BOT_TOKEN in the environment`)
-  }
+/**
+ * Resolve the bot token without requiring an allowlist.
+ *
+ * Setup helpers need credentials before there is anyone allowed to talk to the
+ * bot; the bridge itself still refuses to start on an empty allowlist.
+ * @param env - process environment.
+ * @returns the token and Bot API root.
+ */
+export async function loadToken(env: NodeJS.ProcessEnv = process.env): Promise<{ token: string; baseUrl: string }> {
+  const { raw, file } = await readFileConfig(env)
+  const token = await resolveToken(raw, env, file)
+  return { token, baseUrl: (raw.baseUrl ?? TELEGRAM_API).replace(/\/$/, '') }
+}
+
+/**
+ * Load and validate the bridge configuration.
+ * @param env - process environment; tests inject their own.
+ * @returns the resolved configuration.
+ */
+export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<BridgeConfig> {
+  const { raw, file, stateDir } = await readFileConfig(env)
+  const token = await resolveToken(raw, env, file)
 
   const allowedUsers = (raw.allowedUsers ?? []).map(Number).filter(Number.isSafeInteger)
   const allowedChats = (raw.allowedChats ?? []).map(Number).filter(Number.isSafeInteger)

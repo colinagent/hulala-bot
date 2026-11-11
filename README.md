@@ -70,12 +70,23 @@ secret-tool store --label 'telegram bot' service telegram account bot-token
 ## 运行
 
 ```bash
-node src/index.ts                 # 开发
-node src/index.ts --self-check    # 只验证能不能连上 Host，不发任何消息
-bun run build && node dist/index.mjs   # 打成一个文件再跑
+node src/index.ts                        # 开发
+NODE_USE_ENV_PROXY=1 node src/index.ts   # 需要走本机代理时（见下）
+node src/index.ts --self-check           # 只验证连通性，不发任何消息
+bun run build && node dist/index.mjs     # 打成一个文件再跑
 ```
 
-`--self-check` 会 attach、读会话列表、注册两个 waterfall 事件，然后退出——升级 Host 或换机器后先跑它。
+`--self-check` 会先 `getMe` 验 Telegram，再 attach Host、读会话列表、注册两个 waterfall 事件，然后退出。升级 Host、换机器、或「发了消息没反应」时先跑它。
+
+### 网络：DNS 污染与代理
+
+`api.telegram.org` 在部分网络下会被污染到无关 IP，直连必然失败。Node 的 `fetch` 默认**不读** `HTTP_PROXY`/`HTTPS_PROXY`；Node ≥ 24 用环境变量代理要显式开启：
+
+```bash
+NODE_USE_ENV_PROXY=1 node src/index.ts
+```
+
+`no_proxy` 里的 `127.0.0.1` 会让访问 Host 的 loopback 请求绕过代理，所以两者可以共存。没有代理的机器上这个开关是无害的。
 
 ## 命令
 
