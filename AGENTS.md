@@ -50,7 +50,15 @@ bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs
 
 ## 兼容性现状
 
-载体和发现路径都还绑定在 Hulala Host 上：`~/.hulala/server/host/endpoint.json`，以及 Hulala 的 `hulalaHost` 插件提供的 `/connect?token=…&interactions=answer` cookie 流程。上游 `deepseek-harness` 的 `apps/desktop-host`、`apps/web` 是否暴露同类载体，需要单独核实后才能声称「DSH Web/Desktop 用户也能用」。
+**协议层兼容上游 DSH，只有「发现」绑在 Hulala 上。**
+
+已经核实（`deepseek-harness` 2026-11-11 master，0.2.2-rc.2）：
+
+- `/connect`、`?token=…&interactions=answer`、`Set-Cookie`、`/api/remote.mux` 全部是上游 `@deepseek-ai/dsh-client-connection` 的实现（`connect-protocol.ts` 的 `CONNECT_PATH`、`browser-auth.ts` 的 `TOKEN_QUERY`/`COOKIE_PREFIX`、`api/gateway` 的 `REMOTE_STREAM_MUX_PATH`）。
+- `$mount(SessionRemote)` / `$mount(WorkspaceRemote)` 直接 import 自 `@deepseek-ai/dsh-api-*-controller/remote`，版本对齐即协议对齐。
+- 桌面端不是 IPC-only：`apps/desktop-host` 用 `--host 127.0.0.1 --port 0` 起同一个 Web 应用，再把 URL 经 IPC 交给 Electron。网页端把带 token 的 URL 打到 stdout（`packages/bundle/web-app`）。
+
+缺的只有发现：上游没有 `endpoint.json`，桌面把 URL 只交给 Electron，网页只打印。`src/host/attach.ts` 里的 `endpointPath()` 因此写死了 `~/.hulala/server/host/endpoint.json`。cookie 名不写死——用的是响应里的 `Set-Cookie`，所以 Hulala 的 `hulala_<uuid>` 和上游的 `dsh-auth-` 都能用。
 
 ## 约定
 
