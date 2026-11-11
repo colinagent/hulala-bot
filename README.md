@@ -115,10 +115,8 @@ peer 形态用 `~/.hulala/config/dsh-telegram/` 作为状态目录，从
 
 1. 一个 bot：跟 [@BotFather](https://t.me/BotFather) 说 `/newbot`，拿到 token。
 2. 你自己的 Telegram user id（可以问 [@userinfobot](https://t.me/userinfobot)）。
-3. 一个正在运行的 Host，二选一：
-   - **DSH 原生**：`dsh plugin add dsh-telegram --profile <desktop|web|tui>`，桥随 Host 一起起；
-   - **Hulala**：从 TUI 或 `hulala start` 起来，桥用手动方式另起（见下）。
-4. Node.js ≥ 22.6（直接用 Node 的类型剥离跑 `.ts` 源码）。
+3. `pnpm` 在 PATH 上（两种 Host 的插件命令都转发给它）。
+4. 走源码或独立进程时：Node.js ≥ 22.6（直接用 Node 的类型剥离跑 `.ts` 源码）。
 
 token 放系统钥匙串，不写配置文件：
 
@@ -163,7 +161,7 @@ secret-tool store --label 'telegram bot' service telegram account bot-token
 
 ## 运行（peer 形态）
 
-插件形态不用这一步：`dsh plugin add` 之后桥跟着 Host 起落，配置读 `$DSH_HOME/config/dsh-telegram/`。下面是独立进程形态。
+插件形态不用这一步：装完之后桥跟着 Host 起落，配置读 `$DSH_HOME/config/dsh-telegram/`。下面是独立进程形态。
 
 ```bash
 node src/index.ts                        # 开发
