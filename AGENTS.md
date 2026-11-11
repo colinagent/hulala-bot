@@ -4,11 +4,16 @@
 
 ## 它是什么，不是什么
 
-**是一个 peer**，和 TUI、Desktop、Web 同级——通过 Host 的 HTTP/WS 载体连上去，声明 `interactions=answer`，用 `$mount(Session, Workspace)` 拿会话与工作区，用 `session.follow` 收流式回复与审批请求。
+**两种接法，一套业务逻辑**：
+
+- **插件**（`src/host/plugin.ts`）：宿主内，直接调 `sessionController` / `workspaceController`，`ctx.on('approval/request')` 应答审批。DSH 原生 Web/Desktop 用户用这条。
+- **peer**（`src/host/attach.ts`）：独立进程，走 `/connect` + `/api/remote.mux`。Hulala Host 用这条（GPL 代码不进专有进程，且桥要跨 Host 重启常驻）。
+
+两者都通过 `HostBackend` 交给同一个 `bridge.ts`；`src/host/local-remote.ts` 把宿主服务包成 `ctx.remote` 的形状，所以业务代码没有分叉。
 
 不是：
 
-- 不是 Host 内的 Cordis 插件或 profile 行（那样就拿不到 peer 身份，waterfall 会被 Gateway 丢弃）；
+- 不是 peer-only：插件形态是官方支持的 `dsh plugin add` 路径，`engines.dsh` 在启动前校验版本；
 - 不改、不 patch、不 fork DeepSeek Harness，`~/code/refs/deepseek-harness` 是只读参考；
 - 不自己拉起 Host，只 attach（当前发现路径：`~/.hulala/server/host/endpoint.json`）；
 - 不发明会话租约/接管/独占。多端同时挂同一个会话、审批同时出现在多端、先答生效其余变「已在其他端处理」，都是 DSH 官方客户端本来的语义。

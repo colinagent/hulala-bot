@@ -4,7 +4,22 @@
 
 ## 它是什么
 
-**一个 peer**，和 TUI、Desktop、Web 同级。它连到正在运行的 Hulala Host：
+一套 Telegram 逻辑，两种接进 Host 的方式，都改不到 DSH 一行代码：
+
+| 形态 | 用在 | 怎么进去 |
+|---|---|---|
+| **插件**（宿主内） | DSH 原生 Web / Desktop | `dsh plugin add dsh-telegram --profile desktop` |
+| **peer**（独立进程） | Hulala Host | `node src/index.ts`，发现 `endpoint.json` 后 attach |
+
+插件形态里，桥直接调宿主服务，**没有端口、token、cookie、WebSocket**：
+
+```
+ctx.sessionController.list / create / prompt / follow   → 会话与流式
+ctx.workspaceController.create                          → 工作目录
+ctx.on('approval/request', (req, next) => …)            → 审批
+```
+
+peer 形态里，同样四件事走载体：
 
 ```
 GET /connect?token=…&interactions=answer   → cookie
@@ -13,11 +28,23 @@ ctx.remote.$on('approval/request')         → 审批
 session.follow({ assistantStream: true })  → 流式回复
 ```
 
-不是 Host 插件、不是 Cordis 行、不改 DSH、不打补丁。会话历史、cwd、模型、权限之外的一切都以 Host 为真源；这里只保存「哪个对话挂了哪个会话」。
+会话历史、cwd、模型、权限之外的一切都以 Host 为真源；这里只保存「哪个对话挂了哪个会话」。
 
-**一台机器一个 Host**：发现走 `~/.hulala/server/host/endpoint.json`，只 attach，从不自己拉起 Host。Host 不在时回一条明确提示。
+**多端同时在线是正常的**：TUI 和手机可以挂同一个会话，两边看到同一段历史。peer 形态下审批同时出现在两端，谁先点生效，另一端卡片自动变成「已在其他端处理」；插件形态下审批由 Host 内直接应答，没有跨端撤回。
 
-**多端同时在线是正常的**：TUI 和手机可以挂同一个会话，两边看到同一段历史。审批会同时出现在两端，谁先点生效，另一端卡片自动变成「已在其他端处理」。这是 DSH 官方客户端的行为，不是这里发明的协调机制。
+## 作为 DSH 插件安装
+
+```bash
+dsh plugin add dsh-telegram --profile desktop   # 或 web / tui
+```
+
+它按 `engines.dsh` 声明兼容范围（当前 `>=0.2.2-rc.1 <0.3.0`），Host 启动时检查，不匹配就跳过并报出原因，不会带着半份装配跑起来。状态在 `$DSH_HOME/config/dsh-telegram/`，bot token 仍然只在系统钥匙串里。
+
+自检（不动 Host，只看配置和 Bot API）：
+
+```bash
+node src/index.ts --self-check
+```
 
 ## 准备
 

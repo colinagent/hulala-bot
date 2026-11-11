@@ -40,7 +40,8 @@ export interface HostEndpoint {
 /** One authenticated attachment. */
 export interface HostBackend {
   readonly ctx: Context
-  readonly endpoint: HostEndpoint
+  /** Absent when the bridge runs inside the Host instead of attaching to it. */
+  readonly endpoint?: HostEndpoint
   /** Stop following sessions and release the connection. */
   close(): Promise<void>
 }

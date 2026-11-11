@@ -115,8 +115,8 @@ async function resolveToken(raw: BridgeConfigFile, env: NodeJS.ProcessEnv, file:
  * @param env - process environment.
  * @returns the raw document.
  */
-async function readFileConfig(env: NodeJS.ProcessEnv): Promise<{ raw: BridgeConfigFile; file: string; stateDir: string }> {
-  const stateDir = env.HULALA_TELEGRAM_STATE ?? bridgeStateDir(env)
+async function readFileConfig(env: NodeJS.ProcessEnv, root?: string): Promise<{ raw: BridgeConfigFile; file: string; stateDir: string }> {
+  const stateDir = root ?? env.HULALA_TELEGRAM_STATE ?? bridgeStateDir(env)
   const file = env.HULALA_TELEGRAM_CONFIG ?? join(stateDir, 'config.json')
   let raw: BridgeConfigFile = {}
   try {
@@ -146,8 +146,8 @@ export async function loadToken(env: NodeJS.ProcessEnv = process.env): Promise<{
  * @param env - process environment; tests inject their own.
  * @returns the resolved configuration.
  */
-export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<BridgeConfig> {
-  const { raw, file, stateDir } = await readFileConfig(env)
+export async function loadConfig(env: NodeJS.ProcessEnv = process.env, root?: string): Promise<BridgeConfig> {
+  const { raw, file, stateDir } = await readFileConfig(env, root)
   const token = await resolveToken(raw, env, file)
 
   const allowedUsers = (raw.allowedUsers ?? []).map(Number).filter(Number.isSafeInteger)
