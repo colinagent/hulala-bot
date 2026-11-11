@@ -45,7 +45,7 @@ bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs
 | `src/store/bindings.ts` | chat → session 挂载表 |
 | `src/bridge.ts` | 命令、挂载、流式、审批卡片、回调 |
 
-状态在 `~/.hulala/config/dsh-telegram/`：`config.json`、`bindings.json`、`receipts/`、`logs/`、`bridge.lock`，全部 `0600`/`0700`。bot token 只存系统钥匙串（`service=telegram, account=bot-token`），不进配置文件、不进日志。
+状态目录按形态取：插件形态是 `$DSH_HOME/config/dsh-telegram/`，peer 形态是 `~/.hulala/config/dsh-telegram/`；`config.json`、`bindings.json`、`receipts/`、`logs/` 都在里面，`0600`/`0700`。**轮询锁不在状态目录**：按 bot token 摘要放在 `~/.dsh-telegram/<hash>.lock`，这样 DSH 与呼啦啦两边都装了插件时也只有一个在轮询。bot token 只存系统钥匙串，不进配置文件、不进日志；配置用 `--init` 写，拒绝空允许名单。
 
 ## 版本约束：两种形态两套机制
 

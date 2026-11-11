@@ -37,8 +37,11 @@ session.follow({ assistantStream: true })  → 流式回复
 ## 作为 DSH 插件安装
 
 ```bash
-dsh plugin add dsh-telegram --profile desktop   # 或 web / tui
+dsh plugin --profile tui add dsh-telegram     # 或 hulala plugin --profile tui add dsh-telegram
+dsh plugin --profile tui exec dsh-telegram --init   # 写 allowedUsers 与 tokenRef
 ```
+
+`--init` 是唯一需要手填的东西：允许哪些 Telegram user、token 存在钥匙串的哪个条目。它不写 token，只写引用；允许名单为空时拒绝写入（否则任何人都能驱动 agent）。
 
 装完 `dsh plugin --profile desktop list` 能看到它；`dsh desktop --dump-config` 里会多一行 `# == dsh-telegram`。卸载就是 `dsh plugin --profile desktop remove dsh-telegram`，桥和它的状态目录一起消失。
 
@@ -111,7 +114,7 @@ node src/index.ts --self-check           # 只验证连通性，不发任何消�
 bun run build && node dist/index.mjs     # 打成一个文件再跑
 ```
 
-一个状态根只能跑一个桥：启动时写 `bridge.lock`，再启一个会直接报 `another bridge is already running (pid …)`。两个进程抢同一个 token 会让 Telegram 回 409，并把消息随机丢给其中一个。
+**一个 bot token 只能有一个轮询者，跨 home 生效**：锁按 token 的摘要放在 `~/.dsh-telegram/<hash>.lock`，不在任何一个 home 里。所以 DSH（`~/.dsh`）和呼啦啦（`~/.hulala/harness`）两边都装了插件时，第二个会报 `already being polled by another Host (pid …)` 并待命，而不是两边抢到 409、随机丢消息。
 
 `--self-check` 会先 `getMe` 验 Telegram，再 attach Host、读会话列表、注册两个 waterfall 事件，然后退出。升级 Host、换机器、或「发了消息没反应」时先跑它。它只覆盖 peer 形态；插件形态用 `node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>` 对一个真 profile 跑一遍。
 

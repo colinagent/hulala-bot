@@ -17,7 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { Bridge, type HostConnect } from '../bridge.ts'
-import { loadConfig } from '../config.ts'
+import { bridgeStateDir, loadConfig } from '../config.ts'
 import { Log } from '../log.ts'
 import { Bindings } from '../store/bindings.ts'
 import { acquireLock } from '../store/lock.ts'
@@ -48,7 +48,7 @@ export const Config: z<Config> = z.object({
 
 /** Unix socket path collisions are a Host bug; a bad state dir is a config one. */
 export function apply(ctx: Context, config: Config = {}): void {
-  const stateDir = config.stateDir ?? defaultStateDir()
+  const stateDir = config.stateDir ?? bridgeStateDir()
   let stop: (() => Promise<void>) | undefined
   const starting = start(ctx, stateDir)
     .then(value => { stop = value })
@@ -59,15 +59,6 @@ export function apply(ctx: Context, config: Config = {}): void {
 }
 
 /**
- * Directory under the Harness home that holds this bridge's own files.
- * @returns absolute path.
- */
-function defaultStateDir(): string {
-  const home = process.env.DSH_HOME ?? `${process.env.HOME ?? '.'}/.dsh`
-  return `${home.replace(/\/$/u, '')}/config/dsh-telegram`
-}
-
-/**
  * Build the bridge over this context and start polling.
  * @param ctx - Host context.
  * @param stateDir - bridge state directory.
@@ -75,7 +66,7 @@ function defaultStateDir(): string {
  */
 async function start(ctx: Context, stateDir: string): Promise<() => Promise<void>> {
   const config = await loadConfig(process.env, stateDir)
-  const release = await acquireLock(config.stateDir)
+  const release = await acquireLock(config.token)
   const log = new Log(config.stateDir, config.token)
   const api = new TelegramApi({ token: config.token, baseUrl: config.baseUrl })
   const bindings = await Bindings.open(config.stateDir)

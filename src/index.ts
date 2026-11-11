@@ -8,6 +8,7 @@
  * @module dsh-telegram/index
  */
 import { loadConfig, loadToken } from './config.ts'
+import { runInit } from './init.ts'
 import { Bridge } from './bridge.ts'
 import { attach, endpointPath, readEndpoint } from './host/attach.ts'
 import { Log } from './log.ts'
@@ -46,7 +47,9 @@ async function selfCheck(): Promise<void> {
   }
 }
 
-if (process.argv.includes('--self-check')) {
+if (process.argv.includes('--init')) {
+  process.exitCode = await runInit(process.argv.slice(process.argv.indexOf('--init') + 1))
+} else if (process.argv.includes('--self-check')) {
   await selfCheck()
   process.exit(0)
 }
@@ -54,7 +57,7 @@ if (process.argv.includes('--self-check')) {
 /** Start the bridge and keep the process alive until a signal arrives. */
 async function main(): Promise<void> {
   const config = await loadConfig()
-  const release = await acquireLock(config.stateDir)
+  const release = await acquireLock(config.token)
   const log = new Log(config.stateDir, config.token)
   const api = new TelegramApi({ token: config.token, baseUrl: config.baseUrl })
   const bindings = await Bindings.open(config.stateDir)

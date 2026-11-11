@@ -59,8 +59,17 @@ export function hulalaHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.HULALA_HOME ?? join(homedir(), '.hulala')
 }
 
-/** Directory holding this bridge's own files. */
+/**
+ * Directory holding this bridge's own files.
+ *
+ * Inside a Host the bridge runs as a plugin, so its state belongs under the
+ * Harness home; beside a Host it is a peer process under the Hulala home.
+ * @param env - process environment.
+ * @returns absolute state directory.
+ */
 export function bridgeStateDir(env: NodeJS.ProcessEnv = process.env): string {
+  const dshHome = env.DSH_HOME
+  if (dshHome !== undefined && dshHome !== '') return join(dshHome, 'config', 'dsh-telegram')
   return join(hulalaHome(env), 'config', 'dsh-telegram')
 }
 
