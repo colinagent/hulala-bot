@@ -25,6 +25,8 @@ export function keyOf(key: ChatKey): string {
 interface Entry {
   readonly sessionId: string
   readonly updatedAt: number
+  /** Message pinned above the conversation, rewritten on every move. */
+  readonly statusMessageId?: number
 }
 
 /** File-backed mount table. */
@@ -70,7 +72,32 @@ export class Bindings {
    * @param sessionId - target session.
    */
   set(key: ChatKey, sessionId: string): void {
-    this.#entries.set(keyOf(key), { sessionId, updatedAt: Date.now() })
+    const status = this.#entries.get(keyOf(key))?.statusMessageId
+    this.#entries.set(keyOf(key), {
+      sessionId,
+      updatedAt: Date.now(),
+      ...(status === undefined ? {} : { statusMessageId: status }),
+    })
+  }
+
+  /**
+   * Pinned status message of one conversation.
+   * @param key - chat and optional topic.
+   * @returns the message id, when one was pinned.
+   */
+  statusMessageId(key: ChatKey): number | undefined {
+    return this.#entries.get(keyOf(key))?.statusMessageId
+  }
+
+  /**
+   * Remember the pinned status message.
+   * @param key - chat and optional topic.
+   * @param messageId - message that was pinned.
+   */
+  setStatusMessageId(key: ChatKey, messageId: number): void {
+    const entry = this.#entries.get(keyOf(key))
+    if (entry === undefined) return
+    this.#entries.set(keyOf(key), { ...entry, statusMessageId: messageId })
   }
 
   /**

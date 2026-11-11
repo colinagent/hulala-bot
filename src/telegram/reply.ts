@@ -31,6 +31,15 @@ const MAX_FAILURES = 3
 /** How often to refresh the typing indicator while a turn runs. */
 const TYPING_INTERVAL_MS = 4000
 
+/**
+ * Whether a rejection means the message already holds this exact text.
+ * @param error - value thrown by the Bot API call.
+ * @returns true only for Telegram's "message is not modified" case.
+ */
+function isNotModified(error: unknown): boolean {
+  return error instanceof TelegramError && error.isBadRequest && /not modified/i.test(error.description)
+}
+
 /** Streaming projection of one assistant turn. */
 export class ReplyStream {
   readonly #api: TelegramApi
@@ -97,13 +106,12 @@ export class ReplyStream {
   }
 
   /** Build send options from the current formatting state. */
-  #sendOptions(extra: { keyboard?: never } = {}): SendOptions {
-    const options: SendOptions = {
+  #sendOptions(): SendOptions {
+    return {
       disablePreview: true,
       ...(this.#plain ? {} : { parseMode: 'MarkdownV2' as const }),
       ...(this.#options.threadId === undefined ? {} : { threadId: this.#options.threadId }),
     }
-    return { ...options, ...extra }
   }
 
   /** Project text according to the active formatting mode. */
@@ -182,11 +190,14 @@ export class ReplyStream {
       }
       return
     }
-    if (this.#messageId !== undefined && !this.#degraded) {
+    if (this.#messageId !== undefined) {
+      // Even after a degraded turn, try once more: leaving a placeholder that
+      // says "thinking" forever is worse than one extra request.
       if (await this.#safeEditBody(this.#messageId, body)) {
         await this.#sendAll(body, 1)
         return
       }
+      await this.#api.deleteMessage(this.#chatId, this.#messageId).catch(() => undefined)
     }
     await this.#sendAll(body, 0)
   }
@@ -237,11 +248,11 @@ export class ReplyStream {
           await attempt()
           return true
         } catch (retry) {
-          // Telegram also refuses an edit that changes nothing; that is success.
-          return retry instanceof TelegramError && retry.isBadRequest
+          // An edit that changes nothing already delivered the text.
+          return isNotModified(retry)
         }
       }
-      return error instanceof TelegramError && error.isBadRequest
+      return isNotModified(error)
     }
   }
 

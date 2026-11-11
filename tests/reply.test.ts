@@ -84,3 +84,23 @@ test('carries the thread id on every call', async () => {
   await stream.finish('x')
   for (const call of calls) assert.equal(call.body.message_thread_id ?? 77, 77)
 })
+
+test('replaces the placeholder even when every edit failed', async () => {
+  const calls: { method: string; body: Record<string, unknown> }[] = []
+  let edits = 0
+  const fake = (async (input: string | URL | Request, init?: RequestInit) => {
+    const method = new URL(String(input)).pathname.split('/').pop() ?? ''
+    const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+    calls.push({ method, body })
+    if (method === 'editMessageText' && edits++ < 5) {
+      return new Response(JSON.stringify({ ok: false, description: 'Bad Request: message to edit not found' }), { status: 400 })
+    }
+    return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  const api = new TelegramApi({ token: 't', baseUrl: 'http://fake', fetch: fake })
+  const stream = new ReplyStream(api, 1, { intervalMs: 0, parseMode: 'plain' })
+  await stream.begin()
+  await stream.finish('answer')
+  assert.ok(calls.some(call => call.method === 'deleteMessage'), 'placeholder removed')
+  assert.ok(calls.some(call => call.method === 'sendMessage' && call.body.text === 'answer'))
+})

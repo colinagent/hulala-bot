@@ -42,7 +42,11 @@ interface ApprovalRequest {
 
 /** Question request as delivered to a peer; the bridge only announces it. */
 interface QuestionRequest {
-  readonly questions: readonly { readonly question: string }[]
+  readonly questions: readonly {
+    readonly question: string
+    readonly header?: string
+    readonly options?: readonly { readonly label: string; readonly description?: string }[]
+  }[]
 }
 
 /** One conversation mounted to one session. */
@@ -54,6 +58,10 @@ interface Mount {
   reply: ReplyStream | undefined
   /** Whether a turn is in flight in this mounted session. */
   active: boolean
+  /** Working directory, cached so the pinned status costs no RPC. */
+  path: string | undefined
+  /** Session title, cached for the same reason. */
+  title: string | undefined
 }
 
 /** One approval waiting for a button press. */
@@ -106,8 +114,10 @@ export class Bridge {
   readonly #mounts = new Map<string, Mount>()
   readonly #pending = new Map<string, Pending>()
   readonly #recent = new Map<string, readonly string[]>()
+  readonly #cwdChoices = new Map<string, readonly string[]>()
   readonly #stopped = new AbortController()
   #backend: HostBackend | undefined
+  #connecting: Promise<HostBackend> | undefined
   #sequence = 0
   #defaultSession: string | undefined
 
@@ -151,7 +161,15 @@ export class Bridge {
   /** Current backend or a fresh attachment, with every mount restored. */
   async #ensureHost(): Promise<HostBackend> {
     if (this.#backend !== undefined) return this.#backend
-    const backend = await this.#connect()
+    // Two callers racing here would open two connections, register two sets of
+    // waterfalls and leak one of them.
+    this.#connecting ??= this.#connect()
+    let backend: HostBackend
+    try {
+      backend = await this.#connecting
+    } finally {
+      this.#connecting = undefined
+    }
     this.#backend = backend
     // The forwarded-event key map is a Host-side allowlist shipped as a type
     // augmentation; this client binds the two waterfall events it answers
@@ -170,8 +188,9 @@ export class Bridge {
 
   /** Drop a dead connection so the next call re-attaches. */
   async #drop(reason: string): Promise<void> {
-    this.#log.error(`host connection lost: ${reason}`)
     const backend = this.#backend
+    if (backend === undefined) return
+    this.#log.error(`host connection lost: ${reason}`)
     this.#backend = undefined
     this.#defaultSession = undefined
     for (const key of [...this.#pending.keys()]) this.#settle(key, 'cancelled', '')
@@ -303,7 +322,7 @@ export class Bridge {
       }
       case 'cwd': {
         if (args === '') {
-          await this.#say(key, await this.#describe(key))
+          await this.#offerDirectories(key)
           return
         }
         await this.#switchDirectory(key, args)
@@ -344,7 +363,7 @@ export class Bridge {
 
   /** Human-readable state of one conversation's mount. */
   async #describe(key: ChatKey): Promise<string> {
-    const sessionId = this.#bindings.get(key) ?? await this.#default()
+    const sessionId = this.#bindings.get(key)
     if (sessionId === undefined) return '还没有挂载会话。发一条消息，我会在默认目录里建一个。'
     const summary = await this.#summary(sessionId).catch(() => undefined)
     const mount = this.#mounts.get(keyOf(key))
@@ -361,6 +380,119 @@ export class Bridge {
   #titleOf(summary: SessionSummary | undefined): string | undefined {
     const projections = summary?.projections as { title?: unknown } | undefined
     return typeof projections?.title === 'string' ? projections.title : undefined
+  }
+
+  /** Recently used working directories, newest first. */
+  async #recentDirectories(): Promise<readonly string[]> {
+    const backend = await this.#ensureHost()
+    const items = unwrap(await backend.ctx.remote.session.list({})).items
+      .filter(item => item.origin !== 'subagent' && typeof item.cwd === 'string')
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+    const seen = new Set<string>()
+    const paths: string[] = []
+    for (const item of items) {
+      const path = item.cwd as string
+      if (seen.has(path)) continue
+      seen.add(path)
+      paths.push(path)
+      if (paths.length === 8) break
+    }
+    return paths
+  }
+
+  /** Send the current mount plus one button per recent directory. */
+  async #offerDirectories(key: ChatKey): Promise<void> {
+    const currentId = this.#bindings.get(key)
+    const current = currentId === undefined ? undefined : await this.#summary(currentId).catch(() => undefined)
+    const currentPath = current?.cwd
+    let paths: readonly string[]
+    try {
+      paths = await this.#recentDirectories()
+    } catch (error) {
+      await this.#say(key, `读不到目录列表：${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+    if (paths.length === 0) {
+      await this.#say(key, '还没有用过任何目录。发 /cwd <path> 指定一个。')
+      return
+    }
+    this.#cwdChoices.set(keyOf(key), paths)
+    const header = currentPath === undefined ? '当前还没有挂载会话。' : `当前目录：${currentPath}`
+    const keyboard = paths.map((path, index) => [{
+      text: `${path === currentPath ? '✓ ' : ''}${this.#shortPath(path)}`,
+      callback_data: `cwd:${String(index)}`,
+    }])
+    const body = `${header}\n\n选择要挂载的目录：`
+    const thread = key.threadId === undefined ? {} : { threadId: key.threadId }
+    const send = async (text: string, parseMode?: 'MarkdownV2'): Promise<void> => {
+      await this.#api.sendMessage(key.chatId, text, {
+        disablePreview: true,
+        keyboard,
+        ...(parseMode === undefined ? {} : { parseMode }),
+        ...thread,
+      })
+    }
+    try {
+      if (this.#config.parseMode === 'plain') {
+        await send(body)
+        return
+      }
+      try {
+        await send(toMarkdownV2(body), 'MarkdownV2')
+      } catch {
+        await send(body)
+      }
+    } catch (error) {
+      this.#log.error(`cwd picker failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /** Last two path components, which is what distinguishes directories. */
+  #shortPath(path: string): string {
+    const parts = path.split('/').filter(part => part !== '')
+    if (parts.length <= 2) return path
+    return `…/${parts.slice(-2).join('/')}`
+  }
+
+  /** Rewrite the pinned status message for one conversation. */
+  async #syncStatus(key: ChatKey): Promise<void> {
+    const mount = this.#mounts.get(keyOf(key))
+    const sessionId = this.#bindings.get(key)
+    if (sessionId === undefined) return
+    const path = mount?.path ?? '(未知目录)'
+    const title = mount?.title ?? sessionId.slice(0, 8)
+    const text = `📍 ${path}\n${title} · ${mount?.active === true ? '运行中' : '空闲'}`
+    const thread = key.threadId === undefined ? {} : { threadId: key.threadId }
+    const body = this.#config.parseMode === 'plain' ? text : toMarkdownV2(text)
+    const format = this.#config.parseMode === 'plain' ? {} : { parseMode: 'MarkdownV2' as const }
+    const existing = this.#bindings.statusMessageId(key)
+    if (existing !== undefined) {
+      try {
+        await this.#api.editMessageText(key.chatId, existing, body, { disablePreview: true, ...format })
+        return
+      } catch (error) {
+        // "not modified" means the pin is already right; anything else that is
+        // not a missing message is worth a log, not a second pinned message.
+        const description = error instanceof Error ? error.message : String(error)
+        if (description.includes('not modified')) return
+        if (!/not found|MESSAGE_ID_INVALID/i.test(description)) {
+          this.#log.error(`status edit failed: ${description}`)
+          return
+        }
+      }
+    }
+    try {
+      const messageId = await this.#api.sendMessage(key.chatId, body, { disablePreview: true, ...format, ...thread })
+      const previous = existing
+      this.#bindings.setStatusMessageId(key, messageId)
+      await this.#bindings.flush().catch(() => undefined)
+      if (previous !== undefined) await this.#api.unpinChatMessage(key.chatId, previous).catch(() => undefined)
+      await this.#api.pinChatMessage(key.chatId, messageId).catch(error => {
+        this.#log.error(`pin failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    } catch (error) {
+      this.#log.error(`status message failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   /** Switch the mount to the newest session under a directory. */
@@ -496,10 +628,17 @@ export class Bridge {
   }
 
   /** Mount one conversation and start following its session. */
-  async #mount(key: ChatKey, sessionId: string): Promise<void> {
+  async #mount(key: ChatKey, sessionId: string, known: { path?: string; title?: string } = {}): Promise<void> {
     const existing = this.#mounts.get(keyOf(key))
     existing?.abort.abort()
     existing?.reply?.dispose()
+    let path = known.path
+    let title = known.title
+    if (path === undefined || title === undefined) {
+      const summary = await this.#summary(sessionId).catch(() => undefined)
+      path ??= summary?.cwd
+      title ??= this.#titleOf(summary)
+    }
     this.#mounts.set(keyOf(key), {
       key,
       sessionId,
@@ -507,13 +646,16 @@ export class Bridge {
       abort: new AbortController(),
       reply: undefined,
       active: false,
+      path,
+      title,
     })
     this.#bindings.set(key, sessionId)
     await this.#bindings.flush().catch(() => undefined)
     void this.#follow(this.#mounts.get(keyOf(key)) as Mount)
+    void this.#syncStatus(key)
   }
 
-  /** Follow one mount until it is replaced or the connection dies. */
+  /** Follow one mount, re-opening the stream when the Host closes it. */
   async #follow(mount: Mount): Promise<void> {
     let backend: HostBackend
     try {
@@ -522,20 +664,30 @@ export class Bridge {
       this.#log.error(`follow failed: ${String(error)}`)
       return
     }
-    try {
-      const stream = backend.ctx.remote.session.follow({
-        address: { kind: 'session', sessionId: mount.sessionId as never },
-        maxMessages: 60,
-        assistantStream: true,
-        activate: true,
-      }, mount.abort.signal)
-      for await (const frame of stream as AsyncIterable<SessionFollowFrame>) {
-        if (mount.abort.signal.aborted) return
-        await this.#onFrame(mount, frame)
-      }
-    } catch (error) {
+    for (let attempt = 1; ; attempt += 1) {
       if (mount.abort.signal.aborted) return
-      await this.#drop(error instanceof Error ? error.message : String(error))
+      try {
+        const stream = backend.ctx.remote.session.follow({
+          address: { kind: 'session', sessionId: mount.sessionId as never },
+          maxMessages: 60,
+          assistantStream: true,
+          activate: true,
+        }, mount.abort.signal)
+        for await (const frame of stream as AsyncIterable<SessionFollowFrame>) {
+          if (mount.abort.signal.aborted) return
+          await this.#onFrame(mount, frame)
+        }
+        this.#log.error(`follow ended without an abort; reopening (attempt ${String(attempt)})`)
+      } catch (error) {
+        if (mount.abort.signal.aborted) return
+        this.#log.error(`follow failed (attempt ${String(attempt)}): ${error instanceof Error ? error.message : String(error)}`)
+      }
+      if (attempt >= 3) {
+        // Three failures in a row is a connection problem, not a session one.
+        await this.#drop(`follow for ${mount.sessionId} gave up`)
+        return
+      }
+      await new Promise(settle => setTimeout(settle, 1000 * attempt))
     }
   }
 
@@ -554,6 +706,7 @@ export class Bridge {
     if (effect === undefined) return
     if (effect === 'begin') {
       mount.active = true
+      void this.#syncStatus(mount.key)
       mount.reply?.dispose()
       mount.reply = this.#replyFor(mount)
       await mount.reply.begin()
@@ -574,6 +727,7 @@ export class Bridge {
       mount.reply = undefined
       mount.active = false
       await reply?.finish(mount.tracker.text)
+      void this.#syncStatus(mount.key)
     }
   }
 
@@ -650,7 +804,12 @@ export class Bridge {
 
   /** Announce a question so the phone is not left wondering why the turn stalled. */
   async #onQuestion(request: QuestionRequest, next: () => Promise<unknown>): Promise<unknown> {
-    const lines = request.questions.map(question => `❓ ${question.question}`)
+    const lines = request.questions.map(question => {
+      const head = `❓ ${question.question}`
+      const options = question.options ?? []
+      if (options.length === 0) return head
+      return [head, ...options.map(option => `  · ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`)].join('\n')
+    })
     for (const mount of this.#mounts.values()) {
       await this.#say(mount.key, [...lines, '', '请在这台机器的 TUI 或 Desktop 上回答。'].join('\n'))
     }
@@ -658,7 +817,11 @@ export class Bridge {
   }
 
   /** Handle one button press. */
-  async #onCallback(callback: { id: string; chatId: number; messageId: number; data: string }): Promise<void> {
+  async #onCallback(callback: { id: string; chatId: number; messageId: number; data: string; threadId?: number | undefined }): Promise<void> {
+    if (callback.data.startsWith('cwd:')) {
+      await this.#onDirectoryChoice(callback)
+      return
+    }
     const separator = callback.data.indexOf(':')
     const action = separator === -1 ? callback.data : callback.data.slice(0, separator)
     const key = separator === -1 ? '' : callback.data.slice(separator + 1)
@@ -670,5 +833,23 @@ export class Bridge {
     }
     await this.#api.answerCallbackQuery(callback.id).catch(() => undefined)
     this.#settle(key, action === 'approve' ? 'allowed-once' : 'rejected', '手机')
+  }
+
+  /** Handle one directory button. */
+  async #onDirectoryChoice(callback: { id: string; chatId: number; messageId: number; data: string; threadId?: number | undefined }): Promise<void> {
+    const key: ChatKey = {
+      chatId: callback.chatId,
+      ...(callback.threadId === undefined ? {} : { threadId: callback.threadId }),
+    }
+    const choices = this.#cwdChoices.get(keyOf(key))
+    const index = Number.parseInt(callback.data.slice('cwd:'.length), 10)
+    const path = choices === undefined ? undefined : choices[index]
+    if (path === undefined) {
+      await this.#api.answerCallbackQuery(callback.id, '这个列表已过期，重新发 /cwd').catch(() => undefined)
+      return
+    }
+    await this.#api.answerCallbackQuery(callback.id).catch(() => undefined)
+    await this.#switchDirectory(key, path)
+    await this.#api.editMessageText(callback.chatId, callback.messageId, `📍 ${path}`, { keyboard: [] }).catch(() => undefined)
   }
 }

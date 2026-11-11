@@ -21,6 +21,7 @@ export class FakeTelegram {
   readonly #server: Server
   #queue: Record<string, unknown>[] = []
   #waiters: (() => void)[] = []
+  #edits = new Map<string, unknown>()
   #port = 0
 
   constructor() {
@@ -31,15 +32,27 @@ export class FakeTelegram {
         const method = new URL(request.url ?? '/', 'http://localhost').pathname.split('/').pop() ?? ''
         const body = chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
         this.calls.push({ method, body })
-        void this.#respond(method).then(result => {
-          response.writeHead(200, { 'content-type': 'application/json' })
-          response.end(JSON.stringify({ ok: true, result }))
+        void this.#respond(method, body).then(result => {
+          const document = result as { ok?: boolean }
+          const failed = document.ok === false
+          response.writeHead(failed ? 400 : 200, { 'content-type': 'application/json' })
+          response.end(JSON.stringify(failed ? result : { ok: true, result }))
         })
       })
     })
   }
 
-  async #respond(method: string): Promise<unknown> {
+  async #respond(method: string, body: Record<string, unknown>): Promise<unknown> {
+    if (method === 'editMessageText') {
+      const key = `${String(body.chat_id)}:${String(body.message_id)}`
+      const previous = this.#edits.get(key)
+      if (previous === body.text) {
+        // Exactly what Telegram answers when an edit changes nothing.
+        return { ok: false, description: 'Bad Request: message is not modified', code: 400 }
+      }
+      this.#edits.set(key, body.text)
+      return { message_id: body.message_id }
+    }
     if (method !== 'getUpdates') return { message_id: this.calls.length }
     const update = this.#queue.shift()
     if (update !== undefined) return [update]
@@ -204,6 +217,11 @@ export class FakeHost {
   /** Whether the bridge closed the connection. */
   get disposed(): boolean {
     return this.#disposed
+  }
+
+  /** How many sessions the bridge created. */
+  get created(): number {
+    return this.#created
   }
 
   /** Push one follow frame into every open stream. */

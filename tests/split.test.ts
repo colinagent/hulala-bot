@@ -37,3 +37,10 @@ test('preview truncates with a marker and respects the limit', () => {
 test('preview keeps short text unchanged', () => {
   assert.equal(previewOf('short', 100), 'short')
 })
+
+test('a preview of a code block keeps the fence balanced', () => {
+  const body = Array.from({ length: 200 }, (_, index) => `row ${String(index)}`).join('\n')
+  const preview = previewOf(`说明\n\`\`\`sh\n${body}\n\`\`\`\n结尾`, 400)
+  assert.ok(preview.length <= 400)
+  assert.equal((preview.match(/^```/gm) ?? []).length % 2, 0)
+})

@@ -106,9 +106,8 @@ test('streams one message and settles it with the durable text', async () => {
     context.host.emit(assistantMessage('一 二 三'))
     context.host.emit(turnEnd())
     await context.telegram.until(() => context.telegram.texts(10).includes('一 二 三'))
-    const sends = context.telegram.of('sendMessage')
-    assert.equal(sends.length, 1)
-    assert.match(String(sends[0]?.body.text), /正在思考/)
+    const placeholders = context.telegram.of('sendMessage').filter(call => String(call.body.text).includes('正在思考'))
+    assert.equal(placeholders.length, 1)
   } finally {
     await context.stop()
   }
@@ -231,6 +230,116 @@ test('keeps a message out of the agent when the bot messages itself', async () =
     context.telegram.push(update)
     await new Promise(settle => setTimeout(settle, 150))
     assert.equal(context.host.prompts.length, 0)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('pins a status message naming the mounted directory', async () => {
+  const context = await harness()
+  try {
+    context.host.sessions.push({ sessionId: 'old', cwd: context.defaultCwd, updatedAt: 1, running: false })
+    context.telegram.push(messageUpdate(1, 10, 1, `/cwd ${context.defaultCwd}`))
+    await context.telegram.until(() => context.telegram.of('pinChatMessage').length > 0)
+    const pinned = context.telegram.of('sendMessage').filter(call => String(call.body.text).includes('📍'))
+    assert.ok(pinned.length > 0)
+    assert.ok(String(pinned[0]?.body.text).includes(context.defaultCwd))
+  } finally {
+    await context.stop()
+  }
+})
+
+test('/cwd without arguments offers recent directories as buttons', async () => {
+  const context = await harness()
+  try {
+    context.host.sessions.push(
+      { sessionId: 'a', cwd: '/tmp/alpha', updatedAt: 20, running: false },
+      { sessionId: 'b', cwd: '/tmp/beta', updatedAt: 10, running: false },
+    )
+    context.telegram.push(messageUpdate(1, 10, 1, '/cwd'))
+    await context.telegram.until(() => context.telegram.of('sendMessage').some(call => call.body.reply_markup !== undefined))
+    const picker = context.telegram.of('sendMessage').find(call => call.body.reply_markup !== undefined)
+    const rows = (picker?.body.reply_markup as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard
+    assert.equal(rows.length, 2)
+    assert.ok(rows[0]?.[0]?.text.includes('alpha'))
+    assert.equal(rows[0]?.[0]?.callback_data, 'cwd:0')
+    assert.equal(rows[1]?.[0]?.callback_data, 'cwd:1')
+  } finally {
+    await context.stop()
+  }
+})
+
+test('a directory button mounts the chosen path', async () => {
+  const context = await harness()
+  try {
+    const alpha = await mkdtemp(join(tmpdir(), 'dsh-cwd-alpha-'))
+    const beta = await mkdtemp(join(tmpdir(), 'dsh-cwd-beta-'))
+    context.host.sessions.push(
+      { sessionId: 'a', cwd: alpha, updatedAt: 20, running: false },
+      { sessionId: 'b', cwd: beta, updatedAt: 10, running: false },
+    )
+    context.telegram.push(messageUpdate(1, 10, 1, '/cwd'))
+    await context.telegram.until(() => context.telegram.of('sendMessage').some(call => call.body.reply_markup !== undefined))
+    const picker = context.telegram.of('sendMessage').find(call => call.body.reply_markup !== undefined)
+    context.telegram.push(callbackUpdate(2, 10, 1, Number(picker?.body.message_id ?? 1), 'cwd:1'))
+    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes(beta)))
+    const last = context.host.followRequests.at(-1) as { address: { sessionId: string } }
+    assert.equal(last.address.sessionId, 'b')
+  } finally {
+    await context.stop()
+  }
+})
+
+test('a stale directory button says so instead of mounting', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(callbackUpdate(1, 10, 1, 1, 'cwd:3'))
+    await context.telegram.until(() => context.telegram.of('answerCallbackQuery').length > 0)
+    assert.match(String(context.telegram.of('answerCallbackQuery')[0]?.body.text), /过期/)
+    assert.equal(context.host.followRequests.length, 0)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('/status never creates a session just to look at one', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '/status'))
+    await context.telegram.until(() => context.telegram.texts(10).length > 0)
+    assert.match(String(context.telegram.texts(10)[0]), /还没有挂载会话/)
+    assert.equal(context.host.created, 0)
+    assert.equal(context.host.calls.some(call => call.method === 'workspace.create'), false)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('remounting the same directory does not pile up pinned messages', async () => {
+  const context = await harness()
+  try {
+    context.host.sessions.push({ sessionId: 'old', cwd: context.defaultCwd, updatedAt: 1, running: false })
+    context.telegram.push(messageUpdate(1, 10, 1, `/cwd ${context.defaultCwd}`))
+    await context.telegram.until(() => context.telegram.of('pinChatMessage').length === 1)
+    context.telegram.push(messageUpdate(2, 10, 1, `/cwd ${context.defaultCwd}`))
+    await context.telegram.until(() => context.telegram.texts(10).filter(text => text.includes('已挂载')).length >= 2)
+    await new Promise(settle => setTimeout(settle, 80))
+    assert.equal(context.telegram.of('pinChatMessage').length, 1)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('the pinned status says whether the turn is running', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '/new'))
+    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('已新建会话')))
+    const pinned = () => context.telegram.of('editMessageText').map(call => String(call.body.text)).join('\n')
+    context.host.emit(turnStart())
+    await context.telegram.until(() => pinned().includes('运行中'))
+    context.host.emit(turnEnd())
+    await context.telegram.until(() => pinned().includes('空闲'))
   } finally {
     await context.stop()
   }

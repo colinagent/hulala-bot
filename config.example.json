@@ -1,6 +1,8 @@
 {
   "tokenRef": "telegram/bot-token",
-  "allowedUsers": [123456789],
+  "allowedUsers": [
+    123456789
+  ],
   "defaultCwd": "~/hulala-workspace/workspace",
   "streamIntervalMs": 800,
   "parseMode": "markdown",

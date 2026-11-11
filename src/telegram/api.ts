@@ -82,6 +82,8 @@ export interface TelegramCallback {
   readonly messageId: number
   readonly data: string
   readonly fromId: number | undefined
+  /** Forum topic the button lives in, when any. */
+  readonly threadId: number | undefined
 }
 
 /** Normalized inbound update. */
@@ -104,7 +106,7 @@ interface RawUpdate {
     id: string
     from?: { id: number }
     data?: string
-    message?: { message_id: number; chat: TelegramChat }
+    message?: { message_id: number; chat: TelegramChat; message_thread_id?: number; is_topic_message?: boolean }
   }
 }
 
@@ -212,6 +214,24 @@ export class TelegramApi {
   }
 
   /**
+   * Pin one message so it stays visible above the conversation.
+   * @param chatId - owning chat.
+   * @param messageId - message to pin.
+   */
+  async pinChatMessage(chatId: number, messageId: number): Promise<void> {
+    await this.call('pinChatMessage', { chat_id: chatId, message_id: messageId, disable_notification: true })
+  }
+
+  /**
+   * Remove one pinned message.
+   * @param chatId - owning chat.
+   * @param messageId - message to unpin.
+   */
+  async unpinChatMessage(chatId: number, messageId: number): Promise<void> {
+    await this.call('unpinChatMessage', { chat_id: chatId, message_id: messageId })
+  }
+
+  /**
    * Show "typing" in the chat header, which is how a long turn stays visible.
    * @param chatId - destination chat.
    * @param threadId - forum topic, when any.
@@ -271,6 +291,7 @@ export class TelegramApi {
             messageId: callback.message.message_id,
             data: callback.data,
             fromId: callback.from?.id,
+            threadId: callback.message.is_topic_message === true ? callback.message.message_thread_id : undefined,
           },
         })
       }

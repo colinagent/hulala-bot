@@ -156,15 +156,22 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     throw new Error(`refusing to start with an empty allowlist: set allowedUsers or allowedChats in ${file}`)
   }
 
+  const parseMode = raw.parseMode ?? 'markdown'
+  if (parseMode !== 'markdown' && parseMode !== 'plain') {
+    throw new Error(`parseMode must be "markdown" or "plain", not ${JSON.stringify(String(parseMode))}`)
+  }
+  const streamIntervalMs = Number.isFinite(raw.streamIntervalMs) ? (raw.streamIntervalMs as number) : 800
+  const pollSeconds = Number.isFinite(raw.pollTimeoutSeconds) ? (raw.pollTimeoutSeconds as number) : 25
+
   return {
     baseUrl: (raw.baseUrl ?? TELEGRAM_API).replace(/\/$/, ''),
     token,
     allowedUsers,
     allowedChats,
     defaultCwd: resolve(expandHome(raw.defaultCwd ?? join(homedir(), 'hulala-workspace', 'workspace'))),
-    streamIntervalMs: Math.max(300, raw.streamIntervalMs ?? 800),
-    parseMode: raw.parseMode ?? 'markdown',
+    streamIntervalMs: Math.max(300, streamIntervalMs),
+    parseMode,
     stateDir,
-    pollTimeoutSeconds: Math.max(1, Math.min(50, raw.pollTimeoutSeconds ?? 25)),
+    pollTimeoutSeconds: Math.max(1, Math.min(50, pollSeconds)),
   }
 }

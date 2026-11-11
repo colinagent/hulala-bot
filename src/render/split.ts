@@ -45,9 +45,10 @@ export function splitMessage(text: string, limit = BUDGET): readonly string[] {
     if (current !== '' && current.length + line.length + 1 + reserve > limit) flush()
     if (line.length > limit) {
       // A pathological line: hard-split it rather than send an oversized chunk.
-      for (let index = 0; index < line.length; index += limit - reserve - 1) {
+      const stride = Math.max(1, limit - reserve - 1)
+      for (let index = 0; index < line.length; index += stride) {
         if (current !== '') flush()
-        current = line.slice(index, index + limit - reserve - 1)
+        current = line.slice(index, index + stride)
         flush()
       }
       continue
@@ -69,7 +70,8 @@ export function splitMessage(text: string, limit = BUDGET): readonly string[] {
  */
 export function previewOf(text: string, limit = BUDGET): string {
   if (text.length <= limit) return text
-  const cut = text.lastIndexOf('\n', limit - 20)
-  const head = cut > limit / 2 ? text.slice(0, cut) : text.slice(0, limit - 20)
-  return `${head}\n…`
+  // Reuse the splitter so a preview never leaves a code fence unbalanced; an
+  // unbalanced fence makes Telegram reject the whole edit.
+  const first = splitMessage(text, limit - 8)[0] ?? ''
+  return `${first.replace(/\n+$/, '')}\n…`
 }
