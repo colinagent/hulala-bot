@@ -2,7 +2,7 @@
 
 把这个机器上的 DeepSeek Harness agent 接到 Telegram 上。手机发一句话，本机的 Host 执行，回复流式回到同一个对话；`/cwd` 切换这个对话挂载哪个会话——和 TUI 里切换会话是同一件事。
 
-两种 Host 都能接：**DSH 原生**装成插件，**Hulala** 跑成独立进程。
+两种 Host 都能接：作为 **DSH 插件**装进 Host（DSH 与呼啦啦都支持），或者作为**独立进程**连上去。
 
 ## 它是什么
 
@@ -10,8 +10,8 @@
 
 | 形态 | 用在 | 怎么进去 |
 |---|---|---|
-| **插件**（宿主内） | DSH 原生 Web / Desktop | `dsh plugin add dsh-telegram --profile desktop` |
-| **peer**（独立进程） | Hulala Host | `node src/index.ts`，发现 `endpoint.json` 后 attach |
+| **插件**（宿主内） | DSH 原生 Web / Desktop / TUI | `dsh plugin --profile tui add @colinagent/dsh-telegram` |
+| **peer**（独立进程） | 任意 Host | `node src/index.ts`，发现 `endpoint.json` 后 attach |
 
 插件形态里，桥直接调宿主服务，**没有端口、token、cookie、WebSocket**：
 
@@ -34,24 +34,82 @@ session.follow({ assistantStream: true })  → 流式回复
 
 **多端同时在线是正常的**：TUI 和手机可以挂同一个会话，两边看到同一段历史。peer 形态下审批同时出现在两端，谁先点生效，另一端卡片自动变成「已在其他端处理」；插件形态下审批由 Host 内直接应答，没有跨端撤回。
 
-## 作为 DSH 插件安装
+## 安装
 
-```bash
-dsh plugin --profile tui add dsh-telegram     # 或 hulala plugin --profile tui add dsh-telegram
-dsh plugin --profile tui exec dsh-telegram --init   # 写 allowedUsers 与 tokenRef
+两种 Host 两种装法，包是同一个：`@colinagent/dsh-telegram`。
+
+### DSH（Web / Desktop / TUI）
+
+```sh
+# 1. 装进一个 profile：tui / web / desktop
+dsh plugin --profile tui add @colinagent/dsh-telegram
+
+# 2. 写允许名单和 token 引用（唯一需要手填的东西）
+dsh plugin --profile tui exec dsh-telegram --init
+
+# 3. 重启 Host，日志出现 "bridge starting inside the Host" 就好了
 ```
 
-`--init` 是唯一需要手填的东西：允许哪些 Telegram user、token 存在钥匙串的哪个条目。它不写 token，只写引用；允许名单为空时拒绝写入（否则任何人都能驱动 agent）。
+`--init` 只写 `allowedUsers`、`defaultCwd` 和 token 在钥匙串里的**引用**，不写 token；允许名单为空时拒绝写入——没有它，任何人都能驱动 agent。没有终端时用参数：
 
-装完 `dsh plugin --profile desktop list` 能看到它；`dsh desktop --dump-config` 里会多一行 `# == dsh-telegram`。卸载就是 `dsh plugin --profile desktop remove dsh-telegram`，桥和它的状态目录一起消失。
-
-它按 `engines.dsh` 声明兼容范围（当前 `>=0.2.2-rc.1 <0.3.0`），Host 启动时检查，不匹配就跳过并报出原因，不会带着半份装配跑起来。状态在 `$DSH_HOME/config/dsh-telegram/`，bot token 仍然只在系统钥匙串里。
-
-自检（不动 Host，只看配置和 Bot API）：
-
-```bash
-node src/index.ts --self-check
+```sh
+dsh plugin --profile tui exec dsh-telegram --init \
+  --token-ref telegram/bot-token --allowed-user 123456789 --default-cwd ~/work
 ```
+
+装完核对：
+
+```sh
+dsh plugin --profile tui list             # 依赖里有 @colinagent/dsh-telegram
+dsh tui --dump-config | grep telegram     # 组合里有一行 # == @colinagent/dsh-telegram
+```
+
+卸载：`dsh plugin --profile tui remove @colinagent/dsh-telegram`，然后重启 Host。
+
+### 呼啦啦
+
+呼啦啦的插件就是 DSH 插件，命令形状一样，装进呼啦啦自己的 home
+（`~/.hulala/harness/profiles/tui`），不会写进 `~/.dsh`：
+
+```sh
+hulala plugin --profile tui add @colinagent/dsh-telegram
+hulala plugin --profile tui exec dsh-telegram --init
+# 重启 Host
+```
+
+**自动识别**：如果你在自己的 DSH 里也装了同一个插件（或任何插件），呼啦啦启动时会读
+`~/.dsh/profiles/<同名>/package.json`，把用户额外装的 bundle 链接进自己的组合，所以不
+需要再装一遍。反过来不成立——呼啦啦里装的插件不会出现在 DSH 里。
+
+### 不用插件：独立进程
+
+不想装进 Host 时，桥可以作为一个 peer 进程跑，连到正在运行的 Host：
+
+```sh
+node src/index.ts                 # 或 node dist/index.mjs
+node src/index.ts --self-check    # 只验证配置、Bot API 和 Host 连通性，不发消息
+```
+
+peer 形态用 `~/.hulala/config/dsh-telegram/` 作为状态目录，从
+`~/.hulala/server/host/endpoint.json` 发现 Host，不会自己拉起 Host。
+
+## 配置在哪
+
+| 形态 | 状态目录 |
+|---|---|
+| 插件 | `$DSH_HOME/config/dsh-telegram/`（DSH 是 `~/.dsh`，呼啦啦是 `~/.hulala/harness`） |
+| peer | `~/.hulala/config/dsh-telegram/` |
+
+`config.json`、`bindings.json`、`receipts/`、`logs/` 都在里面，权限 `0600`/`0700`。
+轮询锁不在其中：它按 bot token 的摘要放在 `~/.dsh-telegram/<hash>.lock`，所以 DSH 和
+呼啦啦两边都装了插件时，同一时刻也只有一个 Host 在轮询。
+
+### 版本兼容
+
+包按 `engines.dsh` 声明范围（当前 `>=0.2.2-rc.1 <0.3.0`）。Host 在**导入模块之前**校验，
+不满足就跳过该 bundle 并在 `skippedBundles` 里报原因，不会带着半份装配跑起来。
+
+安装本身要求 `pnpm` 在 PATH 上——DSH 的 `dsh plugin` 与呼啦啦的 `hulala plugin` 都转发给它。
 
 ## 准备
 

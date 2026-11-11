@@ -48,7 +48,8 @@ async function selfCheck(): Promise<void> {
 }
 
 if (process.argv.includes('--init')) {
-  process.exitCode = await runInit(process.argv.slice(process.argv.indexOf('--init') + 1))
+  // Setup is a one-shot: never fall through into polling.
+  process.exit(await runInit(process.argv.slice(process.argv.indexOf('--init') + 1)))
 } else if (process.argv.includes('--self-check')) {
   await selfCheck()
   process.exit(0)

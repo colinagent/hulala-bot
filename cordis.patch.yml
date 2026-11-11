@@ -1,4 +1,4 @@
-# Bundled into a DSH profile by `dsh plugin add dsh-telegram`.
+# Bundled into a DSH profile by `dsh plugin --profile <name> add @colinagent/dsh-telegram`.
 #
 # The bundle is the install unit; this layer is what actually mounts the bridge
 # inside the Host. `inject` in src/host/plugin.ts keeps the row disabled until
@@ -6,4 +6,4 @@
 # in this file.
 - insert:
     - id: dsh-telegram
-      name: dsh-telegram/plugin
+      name: '@colinagent/dsh-telegram/plugin'
