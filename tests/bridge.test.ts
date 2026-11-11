@@ -108,7 +108,7 @@ test('streams one message and settles it with the durable text', async () => {
     await context.telegram.until(() => context.telegram.texts(10).includes('一 二 三'))
     const sends = context.telegram.of('sendMessage')
     assert.equal(sends.length, 1)
-    assert.equal(sends[0]?.body.text, '⋯')
+    assert.match(String(sends[0]?.body.text), /正在思考/)
   } finally {
     await context.stop()
   }

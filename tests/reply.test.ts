@@ -21,13 +21,19 @@ function recorder(): { api: TelegramApi; calls: Call[] } {
   return { api: new TelegramApi({ token: 't', baseUrl: 'http://fake', fetch: fake }), calls }
 }
 
-test('begins with a placeholder and edits it', async () => {
+/** Calls that changed the message itself, ignoring the typing indicator. */
+function sends(calls: readonly { method: string }[]): readonly string[] {
+  return calls.map(call => call.method).filter(method => method !== 'sendChatAction')
+}
+
+test('begins with a placeholder, shows typing, and edits it', async () => {
   const { api, calls } = recorder()
   const stream = new ReplyStream(api, 1, { intervalMs: 0, parseMode: 'plain' })
   await stream.begin()
   await stream.push('hello')
-  assert.deepEqual(calls.map(call => call.method), ['sendMessage', 'editMessageText'])
-  assert.equal(calls[1]?.body.text, 'hello')
+  assert.deepEqual(sends(calls), ['sendMessage', 'editMessageText'])
+  assert.equal(calls.filter(call => call.method === 'editMessageText')[0]?.body.text, 'hello')
+  assert.ok(calls.some(call => call.method === 'sendChatAction' && call.body.action === 'typing'))
   stream.dispose()
 })
 
@@ -36,8 +42,8 @@ test('finishes short text by editing, not by sending again', async () => {
   const stream = new ReplyStream(api, 1, { intervalMs: 0, parseMode: 'plain' })
   await stream.begin()
   await stream.finish('final answer')
-  assert.deepEqual(calls.map(call => call.method), ['sendMessage', 'editMessageText'])
-  assert.equal(calls[1]?.body.text, 'final answer')
+  assert.deepEqual(sends(calls), ['sendMessage', 'editMessageText'])
+  assert.equal(calls.filter(call => call.method === 'editMessageText')[0]?.body.text, 'final answer')
 })
 
 test('splits a long final answer into fresh messages', async () => {
@@ -45,9 +51,9 @@ test('splits a long final answer into fresh messages', async () => {
   const stream = new ReplyStream(api, 1, { intervalMs: 0, parseMode: 'plain' })
   await stream.begin()
   await stream.finish('x'.repeat(9000))
-  const sends = calls.filter(call => call.method === 'sendMessage')
-  assert.equal(sends.length, 3)
-  for (const send of sends) assert.ok(String(send.body.text).length <= 4096)
+  const messages = calls.filter(call => call.method === 'sendMessage')
+  assert.equal(messages.length, 3)
+  for (const send of messages) assert.ok(String(send.body.text).length <= 4096)
 })
 
 test('markdown mode escapes and falls back to plain text on a 400', async () => {

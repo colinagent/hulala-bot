@@ -204,6 +204,7 @@ export class Bridge {
         for (const update of updates) {
           offset = update.updateId + 1
           if (this.#ledger.seen(update.updateId)) continue
+          this.#log.info(`update ${String(update.updateId)} ${this.#describeUpdate(update)}`)
           try {
             await this.#handle(update)
           } catch (error) {
@@ -259,15 +260,36 @@ export class Bridge {
   /** Send one reply in the same conversation, degrading to plain text. */
   async #say(key: ChatKey, text: string): Promise<void> {
     const thread = key.threadId === undefined ? {} : { threadId: key.threadId }
-    if (this.#config.parseMode === 'plain') {
-      await this.#api.sendMessage(key.chatId, text, { disablePreview: true, ...thread }).catch(() => undefined)
-      return
+    const send = async (body: string, parseMode?: 'MarkdownV2'): Promise<void> => {
+      await this.#api.sendMessage(key.chatId, body, {
+        disablePreview: true,
+        ...(parseMode === undefined ? {} : { parseMode }),
+        ...thread,
+      })
     }
     try {
-      await this.#api.sendMessage(key.chatId, toMarkdownV2(text), { disablePreview: true, parseMode: 'MarkdownV2', ...thread })
-    } catch {
-      await this.#api.sendMessage(key.chatId, text, { disablePreview: true, ...thread }).catch(() => undefined)
+      if (this.#config.parseMode === 'plain') {
+        await send(text)
+        return
+      }
+      try {
+        await send(toMarkdownV2(text), 'MarkdownV2')
+      } catch (error) {
+        this.#log.error(`markdown reply rejected, retrying plain: ${error instanceof Error ? error.message : String(error)}`)
+        await send(text)
+      }
+    } catch (error) {
+      this.#log.error(`reply to chat ${String(key.chatId)} failed: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  /** Loggable summary of one update. */
+  #describeUpdate(update: InboundUpdate): string {
+    if (update.kind === 'callback') return `callback chat=${String(update.callback.chatId)} data=${update.callback.data}`
+    const message = update.message
+    const command = parseCommand(message.text)
+    const kind = command === undefined ? `prompt len=${String(message.text.length)}` : `command /${command.name}${command.args === '' ? '' : ' args'}`
+    return `message chat=${String(message.chat.id)} from=${String(message.fromId ?? 0)} ${kind}`
   }
 
   /** Run one command. */

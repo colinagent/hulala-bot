@@ -21,10 +21,15 @@ export interface ReplyOptions {
   readonly intervalMs: number
   readonly parseMode: ParseMode
   readonly threadId?: number | undefined
+  /** Keep the chat header showing "typing" while the turn runs. */
+  readonly typing?: boolean | undefined
 }
 
 /** Consecutive edit failures tolerated before falling back to one final send. */
 const MAX_FAILURES = 3
+
+/** How often to refresh the typing indicator while a turn runs. */
+const TYPING_INTERVAL_MS = 4000
 
 /** Streaming projection of one assistant turn. */
 export class ReplyStream {
@@ -36,6 +41,7 @@ export class ReplyStream {
   #lastText = ''
   #lastSentAt = 0
   #timer: NodeJS.Timeout | undefined
+  #typing: NodeJS.Timeout | undefined
   #failures = 0
   #degraded = false
   #closed = false
@@ -57,9 +63,10 @@ export class ReplyStream {
   async begin(): Promise<void> {
     if (this.#messageId !== undefined || this.#closed) return
     try {
-      this.#messageId = await this.#api.sendMessage(this.#chatId, '⋯', this.#sendOptions())
-      this.#lastText = '⋯'
+      this.#messageId = await this.#api.sendMessage(this.#chatId, '⋯ 正在思考', this.#sendOptions())
+      this.#lastText = '⋯ 正在思考'
       this.#lastSentAt = Date.now()
+      this.#startTyping()
     } catch (error) {
       if (error instanceof TelegramError && error.isBadRequest && !this.#plain) {
         this.#plain = true
@@ -68,6 +75,25 @@ export class ReplyStream {
       }
       this.#degraded = true
     }
+  }
+
+  /** Keep the chat header alive for as long as the turn lasts. */
+  #startTyping(): void {
+    if (this.#options.typing === false || this.#typing !== undefined) return
+    const beat = (): void => {
+      void this.#api.sendChatAction(this.#chatId, this.#options.threadId).catch(() => undefined)
+    }
+    beat()
+    this.#typing = setInterval(beat, TYPING_INTERVAL_MS)
+    // A typing indicator must never be the reason a process stays alive.
+    this.#typing.unref()
+  }
+
+  /** Stop the typing indicator. */
+  #stopTyping(): void {
+    if (this.#typing === undefined) return
+    clearInterval(this.#typing)
+    this.#typing = undefined
   }
 
   /** Build send options from the current formatting state. */
@@ -144,6 +170,7 @@ export class ReplyStream {
    */
   async finish(text: string): Promise<void> {
     this.#closed = true
+    this.#stopTyping()
     if (this.#timer !== undefined) {
       clearTimeout(this.#timer)
       this.#timer = undefined
@@ -221,6 +248,7 @@ export class ReplyStream {
   /** Release timers; the message already sent stays in the chat. */
   dispose(): void {
     this.#closed = true
+    this.#stopTyping()
     if (this.#timer !== undefined) {
       clearTimeout(this.#timer)
       this.#timer = undefined

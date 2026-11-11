@@ -211,6 +211,19 @@ export class TelegramApi {
     await this.call('answerCallbackQuery', text === undefined ? { callback_query_id: id } : { callback_query_id: id, text })
   }
 
+  /**
+   * Show "typing" in the chat header, which is how a long turn stays visible.
+   * @param chatId - destination chat.
+   * @param threadId - forum topic, when any.
+   */
+  async sendChatAction(chatId: number, threadId?: number): Promise<void> {
+    await this.call('sendChatAction', {
+      chat_id: chatId,
+      action: 'typing',
+      ...(threadId === undefined ? {} : { message_thread_id: threadId }),
+    })
+  }
+
   /** Replace the command menu shown by Telegram clients. */
   async setMyCommands(commands: readonly { command: string; description: string }[]): Promise<void> {
     await this.call('setMyCommands', { commands })
