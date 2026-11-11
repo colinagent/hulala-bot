@@ -159,7 +159,14 @@ NODE_USE_ENV_PROXY=1 node src/index.ts
 
 ## 与 Host 版本的关系
 
-依赖 DSH 客户端的 `connection` / `Remote` 面：`$mount` 的命名空间、`SessionFollowFrame` 的形状、`approval/request` 的转发语义。升级 DSH 后先跑 `--self-check`；握手失败会给出可读错误而不是半工作。
+两种形态的约束机制**不同**，别拿一个的结论套另一个。
+
+| | 怎么绑定版本 | 不匹配时 | 怎么自查 |
+|---|---|---|---|
+| **插件** | `package.json` 的 `engines.dsh`（当前 `>=0.2.2-rc.1 <0.3.0`），装载器在**导入模块之前**比较；DSH 包是 peer 依赖，解析到宿主那一份 | 组合层被跳过，`skippedBundles` 报出包名、版本和原因；Host 其余部分照常启动 | `dsh <profile> --dump-config` 里有没有 `# == dsh-telegram`；日志有没有 `skippedBundles` |
+| **peer** | 发现文件里的 `protocol`（当前 `2`），由 Hulala 的 `hulalaHost` 写入 | `readEndpoint()` 直接报错并说明要更新哪一端，不会带着半个连接跑 | `node src/index.ts --self-check` |
+
+插件形态还依赖 DSH 的**服务面**（`sessionController` 的 `list/create/prompt/follow`、`workspaceController.create`、`approval/request` 的 waterfall 语义），peer 形态依赖**载体面**（`/connect`、cookie、`/api/remote.mux`、`$mount` 的命名空间）。前者随 DSH minor 变，后者随 Hulala 的发现协议变。
 
 ## 开发
 

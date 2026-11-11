@@ -47,6 +47,13 @@ bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs
 
 状态在 `~/.hulala/config/dsh-telegram/`：`config.json`、`bindings.json`、`receipts/`、`logs/`、`bridge.lock`，全部 `0600`/`0700`。bot token 只存系统钥匙串（`service=telegram, account=bot-token`），不进配置文件、不进日志。
 
+## 版本约束：两种形态两套机制
+
+- **插件**：`package.json` 的 `engines.dsh`（`>=0.2.2-rc.1 <0.3.0`）。装载器在 import 之前校验，不匹配就跳过并向 `skippedBundles` 报告；`@deepseek-ai/dsh-*` 必须是 **peerDependencies**，否则 profile 里会出现第二份，`Remote` 注册表就分裂了。
+- **peer**：`endpoint.json` 的 `protocol`（当前 `2`），不匹配时 `readEndpoint()` 直接抛错。
+
+改 DSH 依赖版本时两处都要动，且插件那条要跟着上游 minor 走。
+
 ## 三个不显然的坑
 
 1. **必须 `ctx.typert.contexts.registerClient('agent', { identity: () => undefined, resolve: () => ctx })`**，否则 waterfall 会被 Gateway 静默丢弃——不报错，只是永远收不到。
