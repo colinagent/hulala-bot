@@ -3,9 +3,9 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { UpdateLedger } from '../src/telegram/ledger.ts'
+import { UpdateLedger } from '../src/store/ledger.ts'
 
-const dir = (): Promise<string> => mkdtemp(join(tmpdir(), 'dsh-telegram-ledger-'))
+const dir = (): Promise<string> => mkdtemp(join(tmpdir(), 'hulala-bot-ledger-'))
 
 test('remembers an id exactly once', async () => {
   const ledger = await UpdateLedger.open(join(await dir(), 'r.json'))
@@ -31,8 +31,8 @@ test('drops entries past the TTL', async () => {
   await new Promise(settle => setTimeout(settle, 25))
   ledger.seen(6)
   await ledger.flush()
-  const parsed = JSON.parse(await readFile(path, 'utf8')) as { entries: { id: number }[] }
-  assert.deepEqual(parsed.entries.map(entry => entry.id), [6])
+  const parsed = JSON.parse(await readFile(path, 'utf8')) as { entries: { id: string }[] }
+  assert.deepEqual(parsed.entries.map(entry => entry.id), ['6'])
 })
 
 test('honours the capacity, keeping the newest ids', async () => {
@@ -48,4 +48,12 @@ test('a corrupt file behaves like an empty ledger', async () => {
   await writeFile(path, 'not json')
   const ledger = await UpdateLedger.open(path)
   assert.equal(ledger.seen(1), false)
+})
+
+test('accepts string event ids for the long connection', async () => {
+  const ledger = await UpdateLedger.open(join(await dir(), 'r.json'))
+  assert.equal(ledger.seen('evt-1'), false)
+  assert.equal(ledger.seen('evt-1'), true)
+  // A string id must not disturb the numeric cursor Telegram reads.
+  assert.equal(ledger.cursor, 0)
 })

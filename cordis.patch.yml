@@ -1,9 +1,10 @@
-# Bundled into a DSH profile by `dsh plugin --profile <name> add @colinagent/dsh-telegram`.
+# Bundled into a DSH profile by
+#   dsh plugin --profile <name> add @colinagent/hulala-bot
 #
-# The bundle is the install unit; this layer is what actually mounts the bridge
+# The bundle is the install unit; this layer is what actually mounts the bot
 # inside the Host. `inject` in src/host/plugin.ts keeps the row disabled until
 # the session and workspace controllers exist, so no ordering assumption lives
 # in this file.
 - insert:
-    - id: dsh-telegram
-      name: '@colinagent/dsh-telegram/plugin'
+    - id: hulala-bot
+      name: '@colinagent/hulala-bot/plugin'

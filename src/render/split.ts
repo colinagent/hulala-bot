@@ -5,7 +5,7 @@
  * boundary is closed before the split and reopened after it, so every chunk
  * renders as the code block the agent wrote.
  *
- * @module dsh-telegram/render/split
+ * @module hulala-bot/render/split
  */
 
 /** Telegram's hard per-message limit. */

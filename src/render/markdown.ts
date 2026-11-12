@@ -7,7 +7,7 @@
  * and escapes everything else literally. A failed send still falls back to
  * plain text at the transport layer.
  *
- * @module dsh-telegram/render/markdown
+ * @module hulala-bot/render/markdown
  */
 
 /** Characters MarkdownV2 requires escaped outside code spans. */

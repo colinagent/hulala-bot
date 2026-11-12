@@ -5,7 +5,7 @@
  * trailing whitespace; both are handled here so the bridge only sees
  * `{ name, args }`.
  *
- * @module dsh-telegram/router
+ * @module hulala-bot/router
  */
 
 /** One parsed command. */

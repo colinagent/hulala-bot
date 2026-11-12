@@ -1,10 +1,17 @@
 {
-  "tokenRef": "telegram/bot-token",
-  "allowedUsers": [
-    123456789
-  ],
   "defaultCwd": "~/hulala-workspace/workspace",
   "streamIntervalMs": 800,
-  "parseMode": "markdown",
-  "pollTimeoutSeconds": 25
+  "telegram": {
+    "tokenRef": "telegram/bot-token",
+    "allowedUsers": [123456789],
+    "parseMode": "markdown",
+    "pollTimeoutSeconds": 25,
+    "proxy": "http://127.0.0.1:7897"
+  },
+  "lark": {
+    "appId": "cli_0123456789abcdef",
+    "appSecretRef": "lark/app-secret",
+    "domain": "feishu",
+    "allowedUsers": ["ou_0123456789abcdef0123456789abcdef"]
+  }
 }

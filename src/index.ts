@@ -6,10 +6,10 @@
  * done from inside a running Host: writing the configuration file a plugin has
  * no terminal to ask about.
  *
- *     dsh plugin --profile tui exec dsh-telegram --init
- *     hulala plugin --profile tui exec dsh-telegram --init
+ *     dsh plugin --profile tui exec hulala-bot --init
+ *     hulala plugin --profile tui exec hulala-bot --init
  *
- * @module dsh-telegram/index
+ * @module hulala-bot/index
  */
 import { runInit } from './init.ts'
 
@@ -17,17 +17,25 @@ const arguments_ = process.argv.slice(2)
 
 if (arguments_.includes('--help') || arguments_.length === 0) {
   console.log([
-    'dsh-telegram — Telegram bridge for DeepSeek Harness',
+    'hulala-bot — your agent on Telegram and Lark',
     '',
     'This package runs inside a Host as a plugin. The only command here writes',
     'the configuration that plugin needs:',
     '',
-    '  dsh-telegram --init --allowed-user <telegram id> [--token-ref telegram/bot-token]',
-    '  dsh-telegram --init --no-input ...        # never prompt',
+    '  hulala-bot --init --no-input \\',
+    '    --telegram-token-ref telegram/bot-token --telegram-allowed-user <id>',
+    '  hulala-bot --init --no-input \\',
+    '    --lark-app-id cli_<16 hex> --lark-app-secret-ref lark/app-secret \\',
+    '    --lark-allowed-user ou_<id> [--lark-domain feishu|lark]',
+    '',
+    'Both channels may be configured in one file; --init rewrites only the',
+    'channel whose flags it was given. Telegram options: --proxy, --parse-mode.',
+    'Global options: --default-cwd <path>.',
     '',
     'Install it with one of:',
-    '  dsh plugin --profile tui add @colinagent/dsh-telegram',
-    '  hulala plugin --profile tui add @colinagent/dsh-telegram',
+    '  dsh plugin --profile tui add @colinagent/hulala-bot',
+    '  hulala plugin --profile tui add @colinagent/hulala-bot',
+    '  hulala install bot            # the same thing, on a Hulala install',
   ].join('\n'))
   process.exit(0)
 }

@@ -11,7 +11,7 @@
  * envelope only carries the error message across the one boundary the bridge
  * already unwraps.
  *
- * @module dsh-telegram/host/local-remote
+ * @module hulala-bot/host/local-remote
  */
 import type { Context } from '@deepseek-ai/cordis'
 

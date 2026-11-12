@@ -4,10 +4,11 @@
  * Both speak the shapes the bridge actually uses, so a test drives the real
  * bridge code without a network, a token, or a running Host.
  *
- * @module dsh-telegram/tests/fakes
+ * @module hulala-bot/tests/fakes
  */
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import type { Channel, ChatKey, InboundEvent, Outgoing, SendOptions } from '../src/channel.ts'
 
 /** One recorded Bot API call. */
 export interface Recorded {
@@ -268,4 +269,86 @@ export function assistantMessage(text: string): unknown {
 /** One turn end. */
 export function turnEnd(): unknown {
   return { type: 'event', event: { type: 'turn/end', seq: 3, time: Date.now(), data: { turn: 1, reason: 'completed' } } }
+}
+
+/** One recorded message on a surface that is not Telegram. */
+export interface SurfaceMessage {
+  readonly chat: ChatKey
+  readonly messageId: string
+  readonly text: string
+  readonly keyboard?: SendOptions['keyboard']
+}
+
+/**
+ * A second surface for cross-channel tests.
+ *
+ * It implements the channel contract with nothing but arrays, so a bridge test
+ * can prove an approval reaches every mounted conversation without needing a
+ * real Lark tenant.
+ */
+export class FakeSurface implements Channel {
+  readonly name = 'lark' as const
+  readonly maxTextLength = 4000
+  readonly pinnedStatus = false
+  readonly sent: SurfaceMessage[] = []
+  readonly edits: SurfaceMessage[] = []
+  #next = 0
+  #onEvent: ((event: InboundEvent) => Promise<void>) | undefined
+  #ready: { promise: Promise<void>; resolve: () => void } = (() => {
+    let resolve: () => void = () => undefined
+    const promise = new Promise<void>(settle => { resolve = settle })
+    return { promise, resolve }
+  })()
+
+  format(text: string): string {
+    return text
+  }
+
+  async send(chat: ChatKey, body: Outgoing, options: SendOptions = {}): Promise<string> {
+    this.#next += 1
+    const messageId = `m${String(this.#next)}`
+    this.sent.push({
+      chat,
+      messageId,
+      text: body.parts[0] ?? body.text,
+      ...(options.keyboard === undefined ? {} : { keyboard: options.keyboard }),
+    })
+    return messageId
+  }
+
+  async edit(chat: ChatKey, messageId: string, body: Outgoing, options: SendOptions = {}): Promise<void> {
+    this.edits.push({
+      chat,
+      messageId,
+      text: body.parts[0] ?? body.text,
+      ...(options.keyboard === undefined ? {} : { keyboard: options.keyboard }),
+    })
+  }
+
+  async delete(): Promise<void> {
+    // Nothing to release.
+  }
+
+  async answer(): Promise<void> {
+    // The toast is a Lark transport detail; nothing to record here.
+  }
+
+  /** Resolves once the bridge has started this surface. */
+  async whenStarted(): Promise<void> {
+    await this.#ready.promise
+  }
+
+  async start(onEvent: (event: InboundEvent) => Promise<void>, signal: AbortSignal): Promise<void> {
+    this.#onEvent = onEvent
+    this.#ready.resolve()
+    await new Promise<void>(resolve => {
+      if (signal.aborted) { resolve(); return }
+      signal.addEventListener('abort', () => { resolve() }, { once: true })
+    })
+  }
+
+  /** Deliver one event as this surface. */
+  async emit(event: InboundEvent): Promise<void> {
+    await this.#onEvent?.(event)
+  }
 }

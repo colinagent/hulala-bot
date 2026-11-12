@@ -1,44 +1,95 @@
 /**
- * `dsh-telegram --init`: write the one file the bridge cannot run without.
+ * `hulala-bot --init`: write the one file the bot cannot run without.
  *
- * A Host plugin has no terminal to ask questions in, and the bridge refuses to
+ * A Host plugin has no terminal to ask questions in, and the bot refuses to
  * start on an empty allowlist (any stranger could drive the agent). So setup is
- * a deliberate one-shot: collect the allowed Telegram users and a token
- * reference, write `config.json` with user-only permissions, and say what to do
- * next. The token itself is never written — the file holds a keychain reference.
+ * a deliberate one-shot per channel: collect who may talk to it and where the
+ * credential lives, then write `config.json` with user-only permissions. The
+ * token or app secret itself is never written — the file holds a keychain
+ * reference.
  *
- * @module dsh-telegram/init
+ * Re-running with only one channel's flags updates that section and leaves the
+ * other one alone, so adding Lark does not disturb a working Telegram setup.
+ *
+ * @module hulala-bot/init
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
-import { bridgeStateDir } from './config.ts'
+import { botStateDir, type LarkDomain } from './config.ts'
 import { normalizeProxy } from './telegram/proxy.ts'
 
-/** What `--init` decided to write. */
-export interface InitOptions {
+/** Telegram section as `--init` writes it. */
+export interface TelegramInit {
   readonly tokenRef: string
   readonly allowedUsers: readonly number[]
-  readonly defaultCwd: string
+  readonly allowedChats: readonly number[]
+  readonly tokenEnv?: string
   readonly baseUrl?: string
   readonly parseMode?: 'markdown' | 'plain'
   readonly proxy?: string
 }
 
+/** Lark section as `--init` writes it. */
+export interface LarkInit {
+  readonly appId: string
+  readonly appSecretRef: string
+  readonly allowedUsers: readonly string[]
+  readonly allowedChats: readonly string[]
+  readonly appSecretEnv?: string
+  readonly domain: LarkDomain
+}
+
+/** What `--init` decided to write. */
+export interface InitOptions {
+  readonly defaultCwd?: string
+  readonly telegram?: TelegramInit
+  readonly lark?: LarkInit
+}
+
+/** Raw form of one on-disk section, kept loose so unknown fields survive. */
+type Section = Record<string, unknown>
+
+/** Existing document; only the parts this command owns are typed. */
+interface Existing {
+  readonly defaultCwd?: string
+  readonly telegram?: Section
+  readonly lark?: Section
+  readonly [key: string]: unknown
+}
+
+/** Flags parsed before validation. */
 interface Parsed {
-  readonly options: Partial<InitOptions>
+  readonly options: InitOptions
   readonly interactive: boolean
 }
 
 /**
- * Parse the flags; anything missing is asked for when a terminal is attached.
+ * Collect repeated `--flag value` pairs.
  * @param argv - arguments after `--init`.
- * @returns what was supplied and whether prompting is allowed.
+ * @returns a lookup plus the interactive decision.
  */
 function parse(argv: readonly string[]): Parsed {
-  const options: { tokenRef?: string; allowedUsers?: number[]; defaultCwd?: string; baseUrl?: string; parseMode?: 'markdown' | 'plain'; proxy?: string } = {}
+  const telegram: {
+    tokenRef?: string
+    allowedUsers?: number[]
+    allowedChats?: number[]
+    tokenEnv?: string
+    parseMode?: 'markdown' | 'plain'
+    proxy?: string
+  } = {}
+  const lark: {
+    appId?: string
+    appSecretRef?: string
+    appSecretEnv?: string
+    allowedUsers?: string[]
+    allowedChats?: string[]
+    domain?: LarkDomain
+  } = {}
+  let defaultCwd: string | undefined
   let interactive = stdin.isTTY
+  let touched = false
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index] as string
     const value = (): string => {
@@ -47,45 +98,164 @@ function parse(argv: readonly string[]): Parsed {
       index += 1
       return next
     }
-    if (argument === '--token-ref') options.tokenRef = value()
-    else if (argument === '--allowed-user' || argument === '--allowed-users') {
-      for (const entry of value().split(',')) {
-        const id = Number(entry.trim())
+    const ids = (): string[] => value().split(',').map(entry => entry.trim()).filter(entry => entry !== '')
+    if (argument === '--telegram-token-ref') { telegram.tokenRef = value(); touched = true }
+    else if (argument === '--telegram-token-env') { telegram.tokenEnv = value(); touched = true }
+    else if (argument === '--telegram-allowed-user' || argument === '--telegram-allowed-users') {
+      for (const entry of ids()) {
+        const id = Number(entry)
         if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`not a Telegram user id: ${entry}`)
-        options.allowedUsers = [...options.allowedUsers ?? [], id]
+        telegram.allowedUsers = [...telegram.allowedUsers ?? [], id]
       }
-    } else if (argument === '--default-cwd') options.defaultCwd = value()
-    else if (argument === '--base-url') options.baseUrl = value()
-    else if (argument === '--proxy') options.proxy = normalizeProxy(value())
+      touched = true
+    } else if (argument === '--telegram-allowed-chat' || argument === '--telegram-allowed-chats') {
+      for (const entry of ids()) {
+        const id = Number(entry)
+        if (!Number.isSafeInteger(id)) throw new Error(`not a Telegram chat id: ${entry}`)
+        telegram.allowedChats = [...telegram.allowedChats ?? [], id]
+      }
+      touched = true
+    } else if (argument === '--proxy') { telegram.proxy = normalizeProxy(value()); touched = true }
     else if (argument === '--parse-mode') {
       const mode = value()
       if (mode !== 'markdown' && mode !== 'plain') throw new Error('--parse-mode is markdown or plain')
-      options.parseMode = mode
-    } else if (argument === '--no-input') interactive = false
+      telegram.parseMode = mode
+      touched = true
+    } else if (argument === '--lark-app-id') { lark.appId = value(); touched = true }
+    else if (argument === '--lark-app-secret-ref') { lark.appSecretRef = value(); touched = true }
+    else if (argument === '--lark-app-secret-env') { lark.appSecretEnv = value(); touched = true }
+    else if (argument === '--lark-allowed-user' || argument === '--lark-allowed-users') {
+      lark.allowedUsers = [...lark.allowedUsers ?? [], ...ids()]
+      touched = true
+    } else if (argument === '--lark-allowed-chat' || argument === '--lark-allowed-chats') {
+      lark.allowedChats = [...lark.allowedChats ?? [], ...ids()]
+      touched = true
+    } else if (argument === '--lark-domain') {
+      const domain = value()
+      if (domain !== 'feishu' && domain !== 'lark') throw new Error('--lark-domain is feishu or lark')
+      lark.domain = domain
+      touched = true
+    } else if (argument === '--default-cwd') { defaultCwd = value(); touched = true }
+    else if (argument === '--no-input') interactive = false
+    else if (argument === '--init') continue
     else throw new Error(`unknown option ${argument}`)
   }
-  return { options, interactive }
+  const hasTelegram = Object.keys(telegram).length > 0
+  const hasLark = Object.keys(lark).length > 0
+  return {
+    interactive: interactive && !touched,
+    options: {
+      ...(defaultCwd === undefined ? {} : { defaultCwd }),
+      ...(hasTelegram ? { telegram: telegram as TelegramInit } : {}),
+      ...(hasLark ? { lark: lark as LarkInit } : {}),
+    },
+  }
+}
+
+/** Ask one question, treating a blank answer as "not supplied". */
+async function ask(rl: ReturnType<typeof createInterface>, question: string): Promise<string> {
+  return (await rl.question(question)).trim()
 }
 
 /**
- * Ask for the missing pieces on a terminal.
- * @param partial - flags already supplied.
- * @returns the complete options.
+ * Ask for both channels on a terminal.
+ * @returns the options the answers describe.
  */
-async function prompt(partial: Partial<InitOptions>): Promise<InitOptions> {
+async function prompt(): Promise<InitOptions> {
   const rl = createInterface({ input: stdin, output: stdout })
   try {
-    const answer = (await rl.question('Keychain reference for the bot token [telegram/bot-token]: ')).trim()
-    const tokenRef = partial.tokenRef ?? (answer === '' ? 'telegram/bot-token' : answer)
-    const users = partial.allowedUsers ?? (await rl.question('Allowed Telegram user ids, comma separated: '))
-      .split(',')
-      .map(entry => Number(entry.trim()))
-      .filter(id => Number.isSafeInteger(id) && id > 0)
-    const cwdAnswer = (await rl.question('Directory the first message mounts [~]: ')).trim()
-    const cwd = partial.defaultCwd ?? (cwdAnswer === '' ? '~' : cwdAnswer)
-    return { ...partial, tokenRef, allowedUsers: users, defaultCwd: cwd }
+    const tokenRef = await ask(rl, 'Telegram keychain reference (blank to skip): ')
+    let telegram: TelegramInit | undefined
+    if (tokenRef !== '') {
+      const allowedUsers = (await ask(rl, 'Allowed Telegram user ids, comma separated: '))
+        .split(',')
+        .map(entry => Number(entry.trim()))
+        .filter(id => Number.isSafeInteger(id) && id > 0)
+      telegram = {
+        tokenRef: tokenRef === '' ? 'telegram/bot-token' : tokenRef,
+        allowedUsers,
+        allowedChats: [],
+      }
+    }
+    const appId = await ask(rl, 'Lark app id (cli_…), blank to skip: ')
+    let lark: LarkInit | undefined
+    if (appId !== '') {
+      const appSecretRef = await ask(rl, 'Lark app-secret keychain reference [lark/app-secret]: ')
+      const allowedUsers = (await ask(rl, 'Allowed Lark open ids (ou_…), comma separated: '))
+        .split(',')
+        .map(entry => entry.trim())
+        .filter(entry => entry !== '')
+      lark = {
+        appId,
+        appSecretRef: appSecretRef === '' ? 'lark/app-secret' : appSecretRef,
+        allowedUsers,
+        allowedChats: [],
+        domain: 'feishu',
+      }
+    }
+    const cwdAnswer = await ask(rl, 'Directory the first message mounts [~]: ')
+    return {
+      ...(cwdAnswer === '' ? {} : { defaultCwd: cwdAnswer }),
+      ...(telegram === undefined ? {} : { telegram }),
+      ...(lark === undefined ? {} : { lark }),
+    }
   } finally {
     rl.close()
+  }
+}
+
+/** Whether a merged section has at least one allowed identity. */
+function hasAllowlist(section: Section): boolean {
+  const users = Array.isArray(section.allowedUsers) ? section.allowedUsers : []
+  const chats = Array.isArray(section.allowedChats) ? section.allowedChats : []
+  return users.length > 0 || chats.length > 0
+}
+
+/**
+ * Merge one channel's flags over what is already on disk.
+ *
+ * Setup is often re-run to change one thing (a proxy, an extra user), so a
+ * partial rewrite must not silently drop the rest of the section.
+ * @param previous - section already on disk.
+ * @param next - flags supplied this run.
+ * @returns the section to write.
+ */
+function mergeSection(previous: Section | undefined, next: Record<string, unknown>): Section {
+  const { allowedUsers, allowedChats, ...rest } = next
+  return {
+    ...previous,
+    ...Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined)),
+    ...(Array.isArray(allowedUsers) && allowedUsers.length > 0 ? { allowedUsers } : {}),
+    ...(Array.isArray(allowedChats) && allowedChats.length > 0 ? { allowedChats } : {}),
+  }
+}
+
+/**
+ * Validate a merged Telegram section before writing it.
+ * @param section - what would be written.
+ */
+function validateTelegram(section: Section): void {
+  if (typeof section.tokenRef !== 'string' || section.tokenRef === '') {
+    throw new Error('--telegram-token-ref is required for the Telegram channel')
+  }
+  if (!hasAllowlist(section)) {
+    throw new Error('refusing to write an empty Telegram allowlist: pass --telegram-allowed-user <id>')
+  }
+}
+
+/**
+ * Validate a merged Lark section before writing it.
+ * @param section - what would be written.
+ */
+function validateLark(section: Section): void {
+  if (typeof section.appId !== 'string' || !/^cli_[0-9a-fA-F]{16}$/.test(section.appId)) {
+    throw new Error('--lark-app-id must look like cli_<16 hex>')
+  }
+  if (typeof section.appSecretRef !== 'string' || section.appSecretRef === '') {
+    throw new Error('--lark-app-secret-ref is required for the Lark channel')
+  }
+  if (!hasAllowlist(section)) {
+    throw new Error('refusing to write an empty Lark allowlist: pass --lark-allowed-user <ou_…>')
   }
 }
 
@@ -96,31 +266,50 @@ async function prompt(partial: Partial<InitOptions>): Promise<InitOptions> {
  * @returns exit code.
  */
 export async function runInit(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
-  const { options: partial, interactive } = parse(argv)
-  const options = interactive ? await prompt(partial) : partial as InitOptions
-  if (options.tokenRef === undefined) throw new Error('--token-ref is required without a terminal')
-  if (options.allowedUsers === undefined || options.allowedUsers.length === 0) {
-    throw new Error('refusing to write an empty allowlist: pass --allowed-user <id> (Telegram user ids)')
-  }
-  const stateDir = bridgeStateDir(env)
-  await mkdir(stateDir, { recursive: true, mode: 0o700 })
+  const parsed = parse(argv)
+  const options = parsed.interactive ? await prompt() : parsed.options
+  const stateDir = botStateDir(env)
   const file = join(stateDir, 'config.json')
-  const document = {
-    tokenRef: options.tokenRef,
-    allowedUsers: options.allowedUsers,
-    defaultCwd: options.defaultCwd ?? '~',
-    ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-    ...(options.parseMode === undefined ? {} : { parseMode: options.parseMode }),
-    ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
+  let existing: Existing = {}
+  try {
+    existing = JSON.parse(await readFile(file, 'utf8')) as Existing
+  } catch {
+    // No file yet, or unreadable: a fresh document is the honest start.
   }
+  const document: Record<string, unknown> = { ...existing }
+  if (options.defaultCwd !== undefined) document.defaultCwd = options.defaultCwd
+  if (options.telegram !== undefined) {
+    document.telegram = mergeSection(existing.telegram, options.telegram as unknown as Record<string, unknown>)
+  }
+  if (options.lark !== undefined) {
+    document.lark = mergeSection(existing.lark, options.lark as unknown as Record<string, unknown>)
+  }
+  if (document.telegram === undefined && document.lark === undefined) {
+    throw new Error('nothing to configure: pass --telegram-token-ref … or --lark-app-id … (see --help)')
+  }
+  if (document.telegram !== undefined) validateTelegram(document.telegram as Section)
+  if (document.lark !== undefined) validateLark(document.lark as Section)
+  if (document.defaultCwd === undefined) document.defaultCwd = '~'
+  await mkdir(stateDir, { recursive: true, mode: 0o700 })
   await writeFile(file, JSON.stringify(document, null, 2) + '\n', { mode: 0o600 })
   console.log(`wrote ${file}`)
-  console.log('store the token itself in the keychain, never in this file:')
-  if (process.platform === 'darwin') {
-    console.log(`  security add-generic-password -U -s ${options.tokenRef.split('/')[0] ?? 'telegram'} -a ${options.tokenRef.split('/')[1] ?? 'bot-token'} -w '123456:ABC…'`)
-  } else {
-    console.log(`  secret-tool store --label 'telegram bot' service ${options.tokenRef.split('/')[0] ?? 'telegram'} account ${options.tokenRef.split('/')[1] ?? 'bot-token'}`)
-  }
-  console.log('restart the Host (or the bridge process) to pick it up')
+  const refs = [options.telegram?.tokenRef, options.lark?.appSecretRef]
+    .filter((ref): ref is string => typeof ref === 'string' && ref !== '')
+  console.log('store the credentials in the keychain, never in this file:')
+  for (const ref of refs) printKeychain(ref)
+  console.log('restart the Host (or the bot process) to pick it up')
   return 0
+}
+
+/**
+ * Print the platform command that stores one secret.
+ * @param ref - `<service>/<account>`.
+ */
+function printKeychain(ref: string): void {
+  const [service = 'telegram', account = 'bot-token'] = ref.split('/')
+  if (process.platform === 'darwin') {
+    console.log(`  security add-generic-password -U -s ${service} -a ${account} -w '…'`)
+  } else {
+    console.log(`  secret-tool store --label '${service}' service ${service} account ${account}`)
+  }
 }

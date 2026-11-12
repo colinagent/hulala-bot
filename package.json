@@ -1,6 +1,6 @@
 {
-  "name": "@colinagent/dsh-telegram",
-  "version": "0.3.0",
+  "name": "@colinagent/hulala-bot",
+  "version": "0.3.1",
   "license": "GPL-3.0-only",
   "type": "module",
   "engines": {
@@ -8,17 +8,18 @@
     "dsh": ">=0.2.2-rc.1 <0.3.0"
   },
   "bin": {
-    "dsh-telegram": "./dist/index.mjs"
+    "hulala-bot": "./dist/index.mjs"
   },
   "scripts": {
     "start": "node src/index.ts",
     "test": "node --test tests/",
     "typecheck": "tsc --noEmit",
-    "build": "bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs && bun build src/host/plugin.ts --target=node --format=esm --external @deepseek-ai/* --outfile=dist/plugin.mjs",
+    "build": "bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs && bun build src/host/plugin.ts --target=node --format=esm --external @deepseek-ai/* --external @larksuiteoapi/* --outfile=dist/plugin.mjs",
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "@deepseek-ai/cordis": "4.1.0"
+    "@deepseek-ai/cordis": "4.1.0",
+    "@larksuiteoapi/node-sdk": "^1.76.0"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.1",
@@ -58,19 +59,21 @@
   "exports": {
     "./plugin": "./dist/plugin.mjs"
   },
-  "description": "Telegram bridge for DeepSeek Harness: talk to your local agent from your phone, and switch the working directory with /cwd.",
+  "description": "Your local agent on Telegram and Lark: talk to DeepSeek Harness from your phone, switch directories with /cwd, approve tools with a button.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/colinagent/dsh-telegram.git"
+    "url": "git+https://github.com/colinagent/hulala-bot.git"
   },
-  "homepage": "https://github.com/colinagent/dsh-telegram#readme",
+  "homepage": "https://github.com/colinagent/hulala-bot#readme",
   "bugs": {
-    "url": "https://github.com/colinagent/dsh-telegram/issues"
+    "url": "https://github.com/colinagent/hulala-bot/issues"
   },
   "keywords": [
     "deepseek-harness",
     "dsh",
     "telegram",
+    "lark",
+    "feishu",
     "bot",
     "agent",
     "plugin",

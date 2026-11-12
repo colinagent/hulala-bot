@@ -1,19 +1,25 @@
 /**
- * Inbound update de-duplication.
+ * Inbound event de-duplication.
  *
- * Bot API keeps an unconfirmed update for 24 hours and re-delivers it when the
- * acknowledgement is lost. Without a ledger, a re-delivery feeds the same
- * sentence to the agent twice — and the agent really writes files. The ledger
- * is one file per bot, pruned by TTL and a hard cap.
+ * Telegram keeps an unconfirmed update for 24 hours and re-delivers it when the
+ * acknowledgement is lost; a WebSocket can replay an event after a reconnect.
+ * Without a ledger, a re-delivery feeds the same sentence to the agent twice —
+ * and the agent really writes files. The ledger is one file per bot, pruned by
+ * TTL and a hard cap.
  *
- * @module dsh-telegram/telegram/ledger
+ * Both transports deliver duplicates: Telegram re-delivers an unconfirmed
+ * update, and a long connection can replay an event after a reconnect. The
+ * ledger is keyed by whatever id the surface has — a number for Telegram, an
+ * `event_id` string for Lark — because a duplicate prompt costs real file edits.
+ *
+ * @module hulala-bot/store/ledger
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 /** One remembered update. */
 interface Entry {
-  readonly id: number
+  readonly id: string
   readonly at: number
 }
 
@@ -23,7 +29,7 @@ export class UpdateLedger {
   readonly #ttlMs: number
   readonly #capacity: number
   #entries: Entry[] = []
-  #seen = new Set<number>()
+  #seen = new Set<string>()
   #dirty = false
   #flushing: Promise<void> | undefined
 
@@ -47,7 +53,7 @@ export class UpdateLedger {
     const ledger = new UpdateLedger(path, options)
     try {
       const parsed = JSON.parse(await readFile(path, 'utf8')) as { entries?: readonly Entry[] }
-      ledger.#entries = (parsed.entries ?? []).filter(entry => Number.isSafeInteger(entry.id) && Number.isSafeInteger(entry.at))
+      ledger.#entries = (parsed.entries ?? []).filter(entry => typeof entry.id === 'string' && Number.isSafeInteger(entry.at))
     } catch {
       // A missing or corrupt receipt file just means an empty ledger.
     }
@@ -64,14 +70,15 @@ export class UpdateLedger {
   }
 
   /**
-   * Test and remember one update id.
-   * @param id - Telegram update id.
-   * @returns true when this update was already handled.
+   * Test and remember one event id.
+   * @param id - update id or event id; numbers are accepted for Telegram.
+   * @returns true when this event was already handled.
    */
-  seen(id: number): boolean {
-    if (this.#seen.has(id)) return true
-    this.#seen.add(id)
-    this.#entries.push({ id, at: Date.now() })
+  seen(id: string | number): boolean {
+    const key = String(id)
+    if (this.#seen.has(key)) return true
+    this.#seen.add(key)
+    this.#entries.push({ id: key, at: Date.now() })
     this.#dirty = true
     this.#prune(Date.now())
     if (this.#entries.length > this.#capacity) {
@@ -80,10 +87,13 @@ export class UpdateLedger {
     return false
   }
 
-  /** Highest update id seen, for the next `getUpdates` offset. */
+  /** Highest numeric id seen, for the next `getUpdates` offset. */
   get cursor(): number {
     let highest = 0
-    for (const entry of this.#entries) highest = Math.max(highest, entry.id)
+    for (const entry of this.#entries) {
+      const value = Number(entry.id)
+      if (Number.isSafeInteger(value)) highest = Math.max(highest, value)
+    }
     return highest
   }
 

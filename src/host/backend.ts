@@ -6,7 +6,7 @@
  * `ctx.remote`, so this is the single seam between Telegram behaviour and the
  * Host it drives.
  *
- * @module dsh-telegram/host/backend
+ * @module hulala-bot/host/backend
  */
 import type { Context } from '@deepseek-ai/cordis'
 

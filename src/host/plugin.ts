@@ -1,33 +1,40 @@
 /**
- * The bridge as a Host plugin.
+ * The bot as a Host plugin.
  *
- * In another process the bridge had to discover a port, exchange a launch token
+ * In another process the bot had to discover a port, exchange a launch token
  * for a cookie and keep a WebSocket alive. Inside the Host none of that exists:
  * the session and workspace controllers are services on this context, and the
- * two waterfall events are ordinary Cordis events. Every Telegram behaviour
- * lives in `bridge.ts`, untouched; this file supplies the same
- * `HostBackend` the attach path supplies and hands over to it.
+ * two waterfall events are ordinary Cordis events. Everything else lives in
+ * `bridge.ts` and the channel modules; this file builds them and owns shutdown.
  *
  * Load it by listing the bundle in a profile:
  *
- *     dsh plugin add dsh-telegram --profile desktop
+ *     dsh plugin --profile tui add @colinagent/hulala-bot
+ *     hulala plugin --profile tui add @colinagent/hulala-bot
  *
- * @module dsh-telegram/host/plugin
+ * @module hulala-bot/host/plugin
  */
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { Bridge, type HostConnect } from '../bridge.ts'
-import { bridgeStateDir, loadConfig } from '../config.ts'
+import type { Channel } from '../channel.ts'
+import { botStateDir, loadConfig } from '../config.ts'
 import { Log } from '../log.ts'
+import { LarkApi } from '../lark/api.ts'
+import { LarkChannel } from '../lark/channel.ts'
+import { createSdkTransport } from '../lark/ws.ts'
+import { COMMANDS } from '../router.ts'
 import { Bindings } from '../store/bindings.ts'
+import { UpdateLedger } from '../store/ledger.ts'
 import { acquireLock } from '../store/lock.ts'
 import { TelegramApi } from '../telegram/api.ts'
-import { UpdateLedger } from '../telegram/ledger.ts'
+import { TelegramChannel } from '../telegram/channel.ts'
 import type { HostBackend } from './backend.ts'
 import { createLocalRemote } from './local-remote.ts'
 
 /** Stable Cordis plugin name. */
-export const name = 'dsh-telegram'
+export const name = 'hulala-bot'
 
 /** Without both controllers there is no session to mount or prompt. */
 export const inject = ['sessionController', 'workspaceController']
@@ -35,10 +42,10 @@ export const inject = ['sessionController', 'workspaceController']
 /** Profile-patch configuration. */
 export interface Config {
   /**
-   * Bridge state directory: `bindings.json`, receipts, logs.
+   * Bot state directory: `bindings.json`, receipts, logs.
    *
-   * Defaults to `$DSH_HOME/config/dsh-telegram`, so a native DSH install keeps
-   * this bridge's files inside its own home instead of a Hulala directory.
+   * Defaults to `$DSH_HOME/config/hulala-bot`, so a native DSH install keeps
+   * these files inside its own home instead of a Hulala directory.
    */
   stateDir?: string
 }
@@ -47,41 +54,99 @@ export const Config: z<Config> = z.object({
   stateDir: z.string(),
 })
 
-/** Unix socket path collisions are a Host bug; a bad state dir is a config one. */
+/** A bad state directory is a config problem, not a Host bug. */
 export function apply(ctx: Context, config: Config = {}): void {
-  const stateDir = config.stateDir ?? bridgeStateDir()
+  const stateDir = config.stateDir ?? botStateDir()
   let stop: (() => Promise<void>) | undefined
   const starting = start(ctx, stateDir)
     .then(value => { stop = value })
     .catch((error: unknown) => {
-      console.error(`dsh-telegram: ${error instanceof Error ? error.message : String(error)}`)
+      console.error(`hulala-bot: ${error instanceof Error ? error.message : String(error)}`)
     })
-  ctx.effect(() => () => { void starting.then(async () => { await stop?.() }) }, 'dsh-telegram: bridge')
+  ctx.effect(() => () => { void starting.then(async () => { await stop?.() }) }, 'hulala-bot: bridge')
 }
 
 /**
- * Build the bridge over this context and start polling.
+ * Build every configured channel, then start the bridge.
  * @param ctx - Host context.
- * @param stateDir - bridge state directory.
+ * @param stateDir - bot state directory.
  * @returns shutdown function.
  */
 async function start(ctx: Context, stateDir: string): Promise<() => Promise<void>> {
   const config = await loadConfig(process.env, stateDir)
-  const release = await acquireLock(config.token)
-  const log = new Log(config.stateDir, config.token)
-  const api = new TelegramApi({ token: config.token, baseUrl: config.baseUrl, proxy: config.proxy })
-  const bindings = await Bindings.open(config.stateDir)
-  const ledger = await UpdateLedger.open(`${config.stateDir}/receipts/telegram_update_receipts.json`)
+  const log = new Log(config.stateDir, [config.telegram?.token ?? '', config.lark?.appSecret ?? ''])
+  const channels: Channel[] = []
+  const releases: (() => Promise<void>)[] = []
+
+  if (config.telegram !== undefined) {
+    try {
+      releases.push(await acquireLock(`telegram:${config.telegram.token}`))
+      const api = new TelegramApi({
+        token: config.telegram.token,
+        baseUrl: config.telegram.baseUrl,
+        proxy: config.telegram.proxy,
+      })
+      channels.push(new TelegramChannel({
+        api,
+        config: config.telegram,
+        ledger: await UpdateLedger.open(join(config.stateDir, 'receipts', 'telegram.json')),
+        log,
+        commands: COMMANDS,
+      }))
+    } catch (error) {
+      log.error(`telegram not started: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  if (config.lark !== undefined) {
+    try {
+      releases.push(await acquireLock(`lark:${config.lark.appId}`))
+      const api = new LarkApi({
+        appId: config.lark.appId,
+        appSecret: config.lark.appSecret,
+        baseUrl: config.lark.baseUrl,
+      })
+      channels.push(new LarkChannel({
+        api,
+        transport: createSdkTransport({
+          appId: config.lark.appId,
+          appSecret: config.lark.appSecret,
+          domain: config.lark.domain,
+          onError: error => { log.error(`lark connection: ${error.message}`) },
+        }),
+        config: config.lark,
+        ledger: await UpdateLedger.open(join(config.stateDir, 'receipts', 'lark.json')),
+        log,
+      }))
+    } catch (error) {
+      log.error(`lark not started: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  if (channels.length === 0) {
+    await releaseAll(releases)
+    throw new Error(`no channel started (see ${join(config.stateDir, 'logs')})`)
+  }
+
   const remote = createLocalRemote(ctx)
   const connect: HostConnect = async () => ({
     ctx: { remote } as unknown as HostBackend['ctx'],
     close: async () => undefined,
   })
-  const bridge = new Bridge({ config, api, ledger, bindings, log, connect })
-  log.info(`bridge starting inside the Host; state ${config.stateDir}`)
+  const bindings = await Bindings.open(config.stateDir)
+  const bridge = new Bridge({ config, channels, bindings, log, connect })
+  log.info(`bot starting inside the Host; channels ${channels.map(channel => channel.name).join(', ')}; state ${config.stateDir}`)
   await bridge.start()
   return async () => {
     await Promise.race([bridge.stop(), new Promise(settle => setTimeout(settle, 5000))])
-    await release()
+    await releaseAll(releases)
   }
+}
+
+/**
+ * Release every credential lock, even when one fails.
+ * @param releases - release functions taken at startup.
+ */
+async function releaseAll(releases: readonly (() => Promise<void>)[]): Promise<void> {
+  for (const release of releases) await release().catch(() => undefined)
 }

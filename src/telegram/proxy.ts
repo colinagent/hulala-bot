@@ -7,7 +7,7 @@
  * it keeps the plugin dependency-free — the Host may run on Bun or on Node, and
  * both ship `node:http`, `node:https` and `node:tls`.
  *
- * @module dsh-telegram/telegram/proxy
+ * @module hulala-bot/telegram/proxy
  */
 import http from 'node:http'
 import https from 'node:https'

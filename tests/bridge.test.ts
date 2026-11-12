@@ -4,50 +4,65 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { Bridge } from '../src/bridge.ts'
-import type { BridgeConfig } from '../src/config.ts'
+import type { BridgeConfig, TelegramChannelConfig } from '../src/config.ts'
 import type { HostBackend } from '../src/host/backend.ts'
 import { Log } from '../src/log.ts'
+import { COMMANDS } from '../src/router.ts'
 import { Bindings } from '../src/store/bindings.ts'
+import { UpdateLedger } from '../src/store/ledger.ts'
 import { TelegramApi } from '../src/telegram/api.ts'
-import { UpdateLedger } from '../src/telegram/ledger.ts'
+import { TelegramChannel } from '../src/telegram/channel.ts'
 import {
   assistantMessage,
   attemptStart,
   callbackUpdate,
   FakeHost,
+  FakeSurface,
   FakeTelegram,
   messageUpdate,
+  type SurfaceMessage,
   textDelta,
   turnEnd,
   turnStart,
 } from './fakes.ts'
 
 /** Wire one bridge to a fake Host and a fake Bot API. */
-async function harness(overrides: Partial<BridgeConfig> = {}) {
+async function harness(overrides: Partial<BridgeConfig> = {}, surface?: FakeSurface) {
   const telegram = new FakeTelegram()
   const url = await telegram.start()
-  const stateDir = await mkdtemp(join(tmpdir(), 'dsh-telegram-bridge-'))
-  const defaultCwd = await mkdtemp(join(tmpdir(), 'dsh-telegram-cwd-'))
-  const config: BridgeConfig = {
-    baseUrl: url,
+  const stateDir = await mkdtemp(join(tmpdir(), 'hulala-bot-bridge-'))
+  const defaultCwd = await mkdtemp(join(tmpdir(), 'hulala-bot-cwd-'))
+  const telegramConfig: TelegramChannelConfig = {
     token: 'test-token',
+    baseUrl: url,
     allowedUsers: [1],
     allowedChats: [],
-    defaultCwd,
-    streamIntervalMs: 0,
     parseMode: 'plain',
-    stateDir,
     pollTimeoutSeconds: 1,
     proxy: undefined,
+  }
+  const config: BridgeConfig = {
+    defaultCwd,
+    streamIntervalMs: 0,
+    stateDir,
+    telegram: telegramConfig,
+    lark: undefined,
     ...overrides,
   }
   const host = new FakeHost()
+  const log = new Log(stateDir, ['test-token'])
+  const channel = new TelegramChannel({
+    api: new TelegramApi({ token: telegramConfig.token, baseUrl: url }),
+    config: telegramConfig,
+    ledger: await UpdateLedger.open(join(stateDir, 'receipts.json')),
+    log,
+    commands: COMMANDS,
+  })
   const bridge = new Bridge({
     config,
-    api: new TelegramApi({ token: config.token, baseUrl: url }),
-    ledger: await UpdateLedger.open(join(stateDir, 'receipts.json')),
+    channels: surface === undefined ? [channel] : [channel, surface],
     bindings: await Bindings.open(stateDir),
-    log: new Log(stateDir, config.token),
+    log,
     connect: async () => host.backend as unknown as HostBackend,
   })
   void bridge.start()
@@ -341,6 +356,45 @@ test('the pinned status says whether the turn is running', async () => {
     await context.telegram.until(() => pinned().includes('运行中'))
     context.host.emit(turnEnd())
     await context.telegram.until(() => pinned().includes('空闲'))
+  } finally {
+    await context.stop()
+  }
+})
+
+test('one approval reaches both surfaces and one answer closes both', async () => {
+  const surface = new FakeSurface()
+  const context = await harness({}, surface)
+  try {
+    await surface.whenStarted()
+    await surface.emit({
+      kind: 'message',
+      chat: { channel: 'lark', chatId: 'oc_1' },
+      userId: 'ou_1',
+      text: '跑一下',
+      fromBot: false,
+      messageId: 'om_1',
+    })
+    context.telegram.push(messageUpdate(1, 10, 1, '跑一下'))
+    await context.telegram.until(() => context.host.prompts.length === 2)
+
+    const outcome = context.host.invoke('approval/request', { toolName: 'bash', reason: 'rm -rf /tmp/x' })
+    await context.telegram.until(() => surface.sent.some(message => message.keyboard !== undefined))
+    await context.telegram.until(() => context.telegram.of('sendMessage').some(call => call.body.reply_markup !== undefined))
+
+    const card = surface.sent.find(message => message.keyboard !== undefined) as { messageId: string; keyboard: NonNullable<SurfaceMessage['keyboard']> }
+    const data = card.keyboard[0]?.[0]?.data ?? ''
+    assert.match(data, /^approve:a\d+$/)
+    await surface.emit({
+      kind: 'callback',
+      chat: { channel: 'lark', chatId: 'oc_1' },
+      userId: 'ou_1',
+      callbackId: 'om_1',
+      messageId: card.messageId,
+      data,
+    })
+    assert.equal(await outcome, 'allowed-once')
+    await context.telegram.until(() => surface.edits.some(edit => edit.text.includes('已允许')))
+    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('已允许')))
   } finally {
     await context.stop()
   }

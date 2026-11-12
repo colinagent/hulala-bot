@@ -1,24 +1,38 @@
 /**
  * Chat-to-session mount table.
  *
- * The only durable state this bridge owns. Sessions, history, cwd and models
- * stay the Host's; this file only remembers which conversation a chat is
- * looking at, so a restart re-attaches instead of starting over.
+ * The only durable state this bot owns. Sessions, history, cwd and models stay
+ * the Host's; this file only remembers which session a conversation is looking
+ * at, so a restart re-attaches instead of starting over.
  *
- * @module dsh-telegram/store/bindings
+ * Keys are `<channel>:<chatId>:<threadId>`; the thread segment is empty unless
+ * a Telegram forum topic splits a chat into separate conversations.
+ *
+ * @module hulala-bot/store/bindings
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-
-/** One chat conversation; a forum topic is its own conversation. */
-export interface ChatKey {
-  readonly chatId: number
-  readonly threadId?: number | undefined
-}
+import type { ChannelName, ChatKey } from '../channel.ts'
 
 /** Stable file key for one conversation. */
 export function keyOf(key: ChatKey): string {
-  return `${String(key.chatId)}:${String(key.threadId ?? 0)}`
+  return `${key.channel}:${key.chatId}:${key.threadId ?? ''}`
+}
+
+/**
+ * Parse one file key back into a conversation.
+ * @param key - value produced by {@link keyOf}.
+ * @returns the conversation, or undefined when the key is malformed.
+ */
+export function parseKey(key: string): ChatKey | undefined {
+  const [channel, chatId, threadId] = key.split(':')
+  if (channel !== 'telegram' && channel !== 'lark') return undefined
+  if (chatId === undefined || chatId === '') return undefined
+  return {
+    channel: channel as ChannelName,
+    chatId,
+    ...(threadId === undefined || threadId === '' ? {} : { threadId }),
+  }
 }
 
 /** One persisted mount. */
@@ -26,7 +40,7 @@ interface Entry {
   readonly sessionId: string
   readonly updatedAt: number
   /** Message pinned above the conversation, rewritten on every move. */
-  readonly statusMessageId?: number
+  readonly statusMessageId?: string
 }
 
 /** File-backed mount table. */
@@ -41,7 +55,7 @@ export class Bindings {
 
   /**
    * Load the table.
-   * @param dir - bridge state directory.
+   * @param dir - bot state directory.
    * @returns the loaded table.
    */
   static async open(dir: string): Promise<Bindings> {
@@ -49,7 +63,7 @@ export class Bindings {
     try {
       const parsed = JSON.parse(await readFile(table.#path, 'utf8')) as Record<string, Entry>
       for (const [key, entry] of Object.entries(parsed)) {
-        if (typeof entry?.sessionId === 'string') table.#entries.set(key, entry)
+        if (typeof entry?.sessionId === 'string' && parseKey(key) !== undefined) table.#entries.set(key, entry)
       }
     } catch {
       // Missing or corrupt: start empty rather than refuse to run.
@@ -59,7 +73,7 @@ export class Bindings {
 
   /**
    * Session a conversation is mounted to.
-   * @param key - chat and optional topic.
+   * @param key - conversation.
    * @returns the session id, when mounted.
    */
   get(key: ChatKey): string | undefined {
@@ -68,7 +82,7 @@ export class Bindings {
 
   /**
    * Mount a conversation to a session.
-   * @param key - chat and optional topic.
+   * @param key - conversation.
    * @param sessionId - target session.
    */
   set(key: ChatKey, sessionId: string): void {
@@ -82,19 +96,19 @@ export class Bindings {
 
   /**
    * Pinned status message of one conversation.
-   * @param key - chat and optional topic.
+   * @param key - conversation.
    * @returns the message id, when one was pinned.
    */
-  statusMessageId(key: ChatKey): number | undefined {
+  statusMessageId(key: ChatKey): string | undefined {
     return this.#entries.get(keyOf(key))?.statusMessageId
   }
 
   /**
    * Remember the pinned status message.
-   * @param key - chat and optional topic.
+   * @param key - conversation.
    * @param messageId - message that was pinned.
    */
-  setStatusMessageId(key: ChatKey, messageId: number): void {
+  setStatusMessageId(key: ChatKey, messageId: string): void {
     const entry = this.#entries.get(keyOf(key))
     if (entry === undefined) return
     this.#entries.set(keyOf(key), { ...entry, statusMessageId: messageId })
@@ -102,7 +116,7 @@ export class Bindings {
 
   /**
    * Drop a mount.
-   * @param key - chat and optional topic.
+   * @param key - conversation.
    */
   delete(key: ChatKey): void {
     this.#entries.delete(keyOf(key))
@@ -111,24 +125,21 @@ export class Bindings {
   /**
    * Every conversation currently mounted to a session.
    * @param sessionId - session to look up.
-   * @returns the matching chat keys.
+   * @returns the matching conversations.
    */
   chatsFor(sessionId: string): readonly ChatKey[] {
     const keys: ChatKey[] = []
     for (const [key, entry] of this.#entries) {
       if (entry.sessionId !== sessionId) continue
-      const [chatId, threadId] = key.split(':')
-      keys.push({ chatId: Number(chatId), ...(threadId === '0' ? {} : { threadId: Number(threadId) }) })
+      const parsed = parseKey(key)
+      if (parsed !== undefined) keys.push(parsed)
     }
     return keys
   }
 
   /** Every persisted conversation. */
   entries(): readonly ChatKey[] {
-    return [...this.#entries.keys()].map(key => {
-      const [chatId, threadId] = key.split(':')
-      return { chatId: Number(chatId), ...(threadId === '0' ? {} : { threadId: Number(threadId) }) }
-    })
+    return [...this.#entries.keys()].map(parseKey).filter((key): key is ChatKey => key !== undefined)
   }
 
   /** Write the table atomically. */

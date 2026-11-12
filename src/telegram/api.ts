@@ -5,7 +5,7 @@
  * `retry_after` so callers can back off instead of hammering; a failed send
  * never throws out of the polling loop.
  *
- * @module dsh-telegram/telegram/api
+ * @module hulala-bot/telegram/api
  */
 import { createProxiedFetch } from './proxy.ts'
 

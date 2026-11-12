@@ -6,7 +6,7 @@
  * committed at the end. Frames drive the live preview; the durable text wins
  * when the turn settles, so the final message never drifts from history.
  *
- * @module dsh-telegram/host/turn
+ * @module hulala-bot/host/turn
  */
 import type { SessionFollowFrame } from '@deepseek-ai/dsh-api-session-controller/types'
 

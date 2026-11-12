@@ -8,7 +8,7 @@
  *
  * Usage: node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>
  *
- * @module dsh-telegram/scripts/spike-host
+ * @module hulala-bot/scripts/spike-host
  */
 import { spawn } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -20,7 +20,7 @@ if (dshBin === undefined || dshHome === undefined || profile === undefined) {
   throw new Error('usage: node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>')
 }
 
-const stateDir = join(dshHome, 'config', 'dsh-telegram')
+const stateDir = join(dshHome, 'config', 'hulala-bot')
 const workspace = join(dshHome, 'workspace')
 await mkdir(stateDir, { recursive: true, mode: 0o700 })
 await mkdir(workspace, { recursive: true, mode: 0o700 })
@@ -28,12 +28,14 @@ await mkdir(workspace, { recursive: true, mode: 0o700 })
 const telegram = new FakeTelegram()
 const baseUrl = await telegram.start()
 await writeFile(join(stateDir, 'config.json'), JSON.stringify({
-  tokenEnv: 'SPIKE_BOT_TOKEN',
-  baseUrl,
-  allowedUsers: [1],
   defaultCwd: workspace,
-  parseMode: 'plain',
   streamIntervalMs: 0,
+  telegram: {
+    tokenEnv: 'SPIKE_BOT_TOKEN',
+    baseUrl,
+    allowedUsers: [1],
+    parseMode: 'plain',
+  },
 }, undefined, 2))
 console.log(`fake Bot API on ${baseUrl}`)
 
