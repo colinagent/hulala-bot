@@ -1,6 +1,6 @@
 {
   "name": "@colinagent/hulala-bot",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "license": "GPL-3.0-only",
   "type": "module",
   "engines": {
@@ -52,8 +52,9 @@
     "dist/index.mjs",
     "dist/plugin.mjs",
     "cordis.patch.yml",
-    "package.json",
     "README.md",
+    "README.zh-CN.md",
+    "package.json",
     "LICENSE"
   ],
   "exports": {

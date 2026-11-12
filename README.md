@@ -1,117 +1,122 @@
 # hulala-bot
 
-把这个机器上的 DeepSeek Harness agent 接到 **Telegram** 和 **飞书 / Lark** 上。手机发一句话，本机的 Host 执行，回复流式回到同一个对话；`/cwd` 切换这个对话挂载哪个会话——和 TUI 里切换会话是同一件事。
+Put the DeepSeek Harness agent running on this machine on **Telegram** and **Feishu / Lark**. Send one sentence from your phone, the local Host runs it, and the answer streams back into the same conversation; `/cwd` changes which session that conversation is mounted to — the same thing switching sessions in the TUI does.
 
-DSH 原生和呼啦啦都用同一种方式接：**装成 Host 插件**，进 profile，随 Host 起落。npm 上显示的就是这个文件。
+Native DSH and Hulala attach the same way: **install it as a Host plugin**, put it in a profile, and it lives and dies with the Host. This file is also the npm page.
 
 ---
 
-## 让 AI 帮你配
+## Let an AI set it up
 
-这个文件就是给 AI 看的说明书：命令、配置项、期望输出、报错原文都写在里面。把下面这段发给你的 AI（Claude Code、Cursor、ChatGPT 都行），它会照着做：
+This file is written to be an AI's instruction sheet: commands, configuration fields, expected output and exact error strings are all here. Send this to your assistant (Claude Code, Cursor, ChatGPT — anything that can run commands):
 
 ```text
-帮我配置 hulala-bot（一个把 Telegram / 飞书接到本机 DeepSeek Harness 的插件）。
-请先完整读 https://github.com/colinagent/hulala-bot 的 README，然后按顺序执行：
+Set up hulala-bot for me (a plugin that connects Telegram / Feishu to the local
+DeepSeek Harness). First read https://github.com/colinagent/hulala-bot in full,
+then work through it in order:
 
-1. 检查环境：node -v（>=22.6）、pnpm -v、hulala --version
-2. 按「安装」一节装插件（呼啦啦用 hulala install bot；没有这条命令就用 hulala plugin）
-3. 按「配置」一节写 config.json；凭据只进系统钥匙串，不要让我把 token 贴进聊天，也不要写进 config.json
-4. 重启 Host
-5. 按「验证清单」逐条确认，每一步把实际输出贴给我
-6. 任何一步失败，按「故障排查」的原文匹配原因，不要猜
+1. Check the environment: node -v (>=22.6), pnpm -v, hulala --version
+2. Install the plugin as described in "Install" (hulala install bot on Hulala;
+   hulala plugin if that command does not exist yet)
+3. Write config.json as described in "Configure". Credentials go into the OS
+   keychain only — never ask me to paste a token into the chat, never write one
+   into config.json
+4. Restart the Host
+5. Walk the verification checklist and paste the real output of every step
+6. If a step fails, match the exact text against "Troubleshooting". Do not guess.
 
-规则：不要发明 README 之外的命令、配置项、权限或事件；缺信息就停下来问我。
+Rules: invent no commands, config fields, scopes or events beyond this README;
+stop and ask me when something is missing.
 ```
 
-给 AI 的三条硬规则，README 里也有对应依据：
+The three rules the README backs up:
 
-1. **凭据只进钥匙串**，配置文件里只放 `tokenRef` / `appSecretRef`（`<service>/<account>`）。
-2. **允许名单不能为空**：空名单会被拒绝启动，这不是可以跳过的步骤。
-3. **改完配置必须重启 Host**：插件在启动时读取配置，没有热加载。
+1. **Credentials live in the keychain.** The config file only holds `tokenRef` / `appSecretRef` (`<service>/<account>`).
+2. **The allowlist cannot be empty.** The bot refuses to start without one; it is not a step that can be skipped.
+3. **Restart the Host after any config change.** The plugin reads its config at startup; there is no hot reload.
 
 ---
 
-## 它是什么
+## What it is
 
-**一个 Host 插件**，不 patch DSH 一行代码。它跑在 Host 进程里，直接调宿主服务：
+**One Host plugin** that patches no line of DSH. It runs inside the Host process and calls host services directly:
 
 ```
-ctx.sessionController.list / create / prompt / follow   → 会话与流式
-ctx.workspaceController.create                          → 工作目录
-ctx.on('approval/request', (req, next) => …)            → 审批
+ctx.sessionController.list / create / prompt / follow   → sessions and streaming
+ctx.workspaceController.create                          → working directory
+ctx.on('approval/request', (req, next) => …)            → approvals
 ```
 
-没有端口、token、cookie、WebSocket（飞书那条长连接是飞书自己的事件通道，不是本机服务）。会话历史、cwd、模型、权限以 Host 为真源；这里只保存「哪个对话挂了哪个会话」。
+No port, no token exchange, no cookie, no local WebSocket (the Feishu long connection is Feishu's own event channel, not a server on this machine). Sessions, history, cwd, models and permissions stay the Host's; this plugin stores only which conversation is mounted to which session.
 
-**一份代码，两个渠道**：`src/channel.ts` 是渠道契约，`src/telegram/`、`src/lark/` 各自实现，`src/bridge.ts` 的会话逻辑两边共用。两个渠道可以同时开，各自有允许名单和挂载表；Telegram 的对话和飞书的对话是两个独立会话，不合并身份。
+**One code path, two channels**: `src/channel.ts` is the channel contract, `src/telegram/` and `src/lark/` implement it, and the session logic in `src/bridge.ts` is shared. Both channels can run at once, each with its own allowlist and mount table; a Telegram conversation and a Feishu conversation are separate sessions, with no identity merging.
 
 ---
 
-## 安装
+## Install
 
-先检查环境：
+Check the environment first:
 
 ```sh
-node -v     # 需要 >= 22.6
-pnpm -v     # 安装走 pnpm；没有就先装
+node -v     # >= 22.6
+pnpm -v     # the install goes through pnpm; install it if missing
 hulala --version
 ```
 
-### 呼啦啦
+### Hulala
 
 ```sh
 hulala install bot
-# 老版本没有这条命令时，等价写法：
+# On an older Hulala without that command, the equivalent is:
 hulala plugin --profile tui add @colinagent/hulala-bot
 ```
 
-`hulala install bot` 只是把 profile 名（`tui`）和包名填好的快捷方式，安装仍由 DSH 的 `runPluginCommand` 完成。
+`hulala install bot` only fills in the profile name (`tui`) and the package name; the install still runs through DSH's `runPluginCommand`.
 
-### DSH（Web / Desktop / TUI）
+### DSH (Web / Desktop / TUI)
 
 ```sh
 dsh plugin --profile tui add @colinagent/hulala-bot
 ```
 
-**期望输出**：最后一行出现 `profile tui: @deepseek-ai/dsh-base, @colinagent/hulala-bot` 和 `Restart the Host for the change to take effect.`
+**Expected output**: a final `profile tui: @deepseek-ai/dsh-base, @colinagent/hulala-bot` and `Restart the Host for the change to take effect.`
 
-装完核对：
+Confirm:
 
 ```sh
-hulala plugin --profile tui list    # 依赖里有 @colinagent/hulala-bot
+hulala plugin --profile tui list    # @colinagent/hulala-bot is in the dependencies
 ```
 
-卸载：`hulala plugin --profile tui remove @colinagent/hulala-bot`，然后重启 Host。
+Uninstall: `hulala plugin --profile tui remove @colinagent/hulala-bot`, then restart the Host.
 
 ---
 
-## 配置
+## Configure
 
-配置写在 `$DSH_HOME/config/hulala-bot/config.json`：
+The configuration lives in `$DSH_HOME/config/hulala-bot/config.json`:
 
-| Host | 实际路径 |
+| Host | Actual path |
 |---|---|
-| 呼啦啦 | `~/.hulala/harness/config/hulala-bot/config.json` |
+| Hulala | `~/.hulala/harness/config/hulala-bot/config.json` |
 | DSH | `~/.dsh/config/hulala-bot/config.json` |
 
-用 `--init` 写，不要手写整个文件（它会校验、合并、设置 `0600` 权限）：
+Write it with `--init` rather than by hand — it validates, merges, and sets `0600`:
 
 ```sh
-# 呼啦啦
+# Hulala
 hulala plugin --profile tui exec hulala-bot --init
 
 # DSH
 dsh plugin --profile tui exec hulala-bot --init
 ```
 
-有终端时它会逐项提问；没有终端（或加 `--no-input`）时用参数。**两条渠道可以只配一条**，也可以都配。
+With a terminal it asks one question at a time; without one (or with `--no-input`) it takes flags. **Configure one channel or both** — a missing section simply does not start.
 
 ### Telegram
 
-先准备：跟 [@BotFather](https://t.me/BotFather) 说 `/newbot` 拿 token；自己的 user id 可以问 [@userinfobot](https://t.me/userinfobot)。
+Prepare: `/newbot` to [@BotFather](https://t.me/BotFather) for a token; your own user id from [@userinfobot](https://t.me/userinfobot).
 
-token 放系统钥匙串（**不要**写进 config.json）：
+Put the token in the OS keychain (**never** in `config.json`):
 
 ```bash
 # macOS
@@ -120,7 +125,7 @@ security add-generic-password -U -s telegram -a bot-token -w '123456:ABC…'
 secret-tool store --label 'telegram bot' service telegram account bot-token
 ```
 
-写配置：
+Write the config:
 
 ```sh
 hulala plugin --profile tui exec hulala-bot --init --no-input \
@@ -129,27 +134,27 @@ hulala plugin --profile tui exec hulala-bot --init --no-input \
   --default-cwd ~/hulala-workspace/workspace
 ```
 
-国内网络需要代理时加 `--proxy http://127.0.0.1:7897`（只支持 HTTP/HTTPS，SOCKS5 会在启动前报错）。
+On a network that cannot reach `api.telegram.org`, add `--proxy http://127.0.0.1:7897` (HTTP/HTTPS only; SOCKS5 is rejected before startup).
 
-也可以临时用环境变量代替钥匙串：`TELEGRAM_BOT_TOKEN=…`，或配置里的 `tokenEnv` 指定变量名。
+Environment variables can stand in for the keychain: `TELEGRAM_BOT_TOKEN=…`, or point `tokenEnv` at your own variable.
 
-### 飞书 / Lark
+### Feishu / Lark
 
-配置由你在开发者后台完成，插件这边只填 app id 和允许名单。
+You create the app in the developer console; this plugin only needs the app id and an allowlist.
 
-1. 在 [飞书开放平台](https://open.feishu.cn)（国际版 [Lark](https://open.larksuite.com)）建一个**企业自建应用**，拿到 App ID（`cli_` + 16 位十六进制）和 App Secret。
-2. 开启**机器人能力**。
-3. 权限至少：`im:message`、`im:message:send_as_bot`。后台会按实际接口提示还缺哪一项。
-4. **事件与回调 → 订阅方式：使用长连接接收事件**。订阅 `im.message.receive_v1`，并添加卡片回调 `card.action.trigger`。**不要**配 webhook 地址。
-5. 发布版本，把可用范围设成你自己（或团队），然后在飞书里单聊机器人或把它拉进群（群里必须 @ 它）。
+1. Create a **self-built enterprise app** at [Feishu Open Platform](https://open.feishu.cn) (international: [Lark](https://open.larksuite.com)) and copy the App ID (`cli_` + 16 hex) and App Secret.
+2. Enable the **bot capability**.
+3. Scopes: at least `im:message` and `im:message:send_as_bot`. The console tells you which one is still missing for a given API.
+4. **Events and Callbacks → subscription mode: receive events through a long connection.** Subscribe to `im.message.receive_v1` and add the `card.action.trigger` callback. **Do not** configure a webhook URL.
+5. Publish a version, set its availability to yourself (or your team), then message the bot or add it to a group (it must be @-mentioned in groups).
 
-App secret 放钥匙串：
+Put the app secret in the keychain:
 
 ```bash
 security add-generic-password -U -s lark -a app-secret -w '…'
 ```
 
-写配置：
+Write the config:
 
 ```sh
 hulala plugin --profile tui exec hulala-bot --init --no-input \
@@ -158,38 +163,38 @@ hulala plugin --profile tui exec hulala-bot --init --no-input \
   --lark-allowed-user ou_0123456789abcdef0123456789abcdef
 ```
 
-国际版加 `--lark-domain lark`（Open API 指向 `open.larksuite.com`）。
+International Lark: add `--lark-domain lark` (the Open API moves to `open.larksuite.com`).
 
-**不知道自己的 open id**：先随便给机器人发一条消息，然后看日志里的
+**Finding your open id**: message the bot once and read the log:
 
 ```
 ignored chat=oc_… from=ou_… (not in allowlist)
 ```
 
-把 `ou_…` 填进允许名单（重跑 `--init --lark-allowed-user ou_…`），重启 Host。
+Put that `ou_…` into the allowlist (`--init --lark-allowed-user ou_…`) and restart the Host.
 
-### `--init` 参数
+### `--init` flags
 
-| 参数 | 说明 |
+| Flag | Meaning |
 |---|---|
-| `--telegram-token-ref <service/account>` | 钥匙串引用，默认示例 `telegram/bot-token` |
-| `--telegram-token-env <NAME>` | 改从环境变量读 token |
-| `--telegram-allowed-user <id[,id]>` | 允许的 Telegram user id（可重复） |
-| `--telegram-allowed-chat <id[,id]>` | 允许的 chat id |
-| `--proxy <http://…>` | Telegram 走的 HTTP/HTTPS 代理 |
-| `--parse-mode markdown\|plain` | Telegram 回复格式，`markdown` 失败会自动退回纯文本 |
-| `--lark-app-id <cli_…>` | 飞书应用 App ID |
-| `--lark-app-secret-ref <service/account>` | app secret 的钥匙串引用 |
-| `--lark-app-secret-env <NAME>` | 改从环境变量读 app secret |
-| `--lark-allowed-user <ou_…[,ou_…]>` | 允许的 open id |
-| `--lark-allowed-chat <oc_…[,oc_…]>` | 允许的 chat id |
-| `--lark-domain feishu\|lark` | 国内飞书（默认）或国际版 |
-| `--default-cwd <path>` | 第一次说话时在哪个目录建会话 |
-| `--no-input` | 不提问；缺参数直接报错 |
+| `--telegram-token-ref <service/account>` | Keychain reference; the documented name is `telegram/bot-token` |
+| `--telegram-token-env <NAME>` | Read the token from an environment variable instead |
+| `--telegram-allowed-user <id[,id]>` | Allowed Telegram user ids (repeatable) |
+| `--telegram-allowed-chat <id[,id]>` | Allowed chat ids |
+| `--proxy <http://…>` | HTTP/HTTPS proxy for Telegram |
+| `--parse-mode markdown\|plain` | Telegram formatting; `markdown` falls back to plain text on rejection |
+| `--lark-app-id <cli_…>` | Feishu app id |
+| `--lark-app-secret-ref <service/account>` | Keychain reference for the app secret |
+| `--lark-app-secret-env <NAME>` | Read the app secret from an environment variable |
+| `--lark-allowed-user <ou_…[,ou_…]>` | Allowed open ids |
+| `--lark-allowed-chat <oc_…[,oc_…]>` | Allowed chat ids |
+| `--lark-domain feishu\|lark` | Feishu (default) or international Lark |
+| `--default-cwd <path>` | Where the first message creates its session |
+| `--no-input` | Never prompt; missing values are errors |
 
-`--init` **按渠道合并**：只改它拿到的那条渠道，另一条和已有的允许名单/未知字段原样保留。所以补一个代理、加一个用户都不用重写整个文件。
+`--init` **merges per channel**: it rewrites only the channel whose flags it got, and keeps the other channel, existing allowlists and unknown fields. Adding a proxy or one more user never wipes the rest of the file.
 
-### 文件结构
+### File shape
 
 ```json
 {
@@ -210,179 +215,180 @@ ignored chat=oc_… from=ou_… (not in allowlist)
 }
 ```
 
-顶层：
+Top level:
 
-| 字段 | 说明 |
+| Field | Meaning |
 |---|---|
-| `defaultCwd` | 第一次说话时在哪个目录建会话 |
-| `streamIntervalMs` | 两次流式更新的最小间隔，默认 800ms（飞书卡片有频率限制，别调太低） |
+| `defaultCwd` | Where the first message creates its session |
+| `streamIntervalMs` | Minimum gap between two streaming edits, default 800ms (Feishu cards are rate limited — do not go low) |
 
-`telegram`：
+`telegram`:
 
-| 字段 | 说明 |
+| Field | Meaning |
 |---|---|
-| `tokenRef` / `tokenEnv` | 钥匙串引用或环境变量名 |
-| `allowedUsers` | Telegram user id；与 `allowedChats` 都为空时拒绝启动 |
-| `allowedChats` | chat id（群/频道场景） |
-| `parseMode` | `markdown`（默认，失败自动回退）或 `plain` |
-| `proxy` | HTTP/HTTPS CONNECT 代理；不读 `HTTPS_PROXY`，只认这一项 |
-| `baseUrl` | 只给测试用 |
-| `pollTimeoutSeconds` | 长轮询等待秒数，默认 25 |
+| `tokenRef` / `tokenEnv` | Keychain reference or environment variable name |
+| `allowedUsers` | Telegram user ids; startup is refused when this and `allowedChats` are both empty |
+| `allowedChats` | Chat ids (groups/channels) |
+| `parseMode` | `markdown` (default, falls back on rejection) or `plain` |
+| `proxy` | HTTP/HTTPS CONNECT proxy; `HTTPS_PROXY` is not read, this is the only switch |
+| `baseUrl` | Tests only |
+| `pollTimeoutSeconds` | Long-poll hold, default 25 |
 
-`lark`：
+`lark`:
 
-| 字段 | 说明 |
+| Field | Meaning |
 |---|---|
-| `appId` | `cli_` + 16 位十六进制；格式不对在连网前就报错 |
-| `appSecretRef` / `appSecretEnv` | 钥匙串引用或环境变量名 |
-| `domain` | `feishu`（默认）或 `lark` |
-| `allowedUsers` | open id（`ou_…`）；与 `allowedChats` 都为空时拒绝启动 |
-| `allowedChats` | chat id（`oc_…`） |
-| `baseUrl` | 只给测试用 |
+| `appId` | `cli_` + 16 hex; a bad shape fails before any network call |
+| `appSecretRef` / `appSecretEnv` | Keychain reference or environment variable name |
+| `domain` | `feishu` (default) or `lark` |
+| `allowedUsers` | Open ids (`ou_…`); startup is refused when this and `allowedChats` are both empty |
+| `allowedChats` | Chat ids (`oc_…`) |
+| `baseUrl` | Tests only |
 
-环境变量：`HULALA_BOT_CONFIG`（配置文件路径）、`HULALA_BOT_STATE`（状态目录）、`HULALA_BOT_LOCK_DIR`（锁目录）、`TELEGRAM_BOT_TOKEN`、`LARK_APP_SECRET`。
+Environment variables: `HULALA_BOT_CONFIG` (config path), `HULALA_BOT_STATE` (state directory), `HULALA_BOT_LOCK_DIR` (lock directory), `TELEGRAM_BOT_TOKEN`, `LARK_APP_SECRET`.
 
 ---
 
-## 重启与验证
+## Restart and verify
 
-配置和插件都只在 Host 启动时读取，**改完必须重启**：
+The plugin reads both the profile and the config at Host startup, so **restart after any change**:
 
 ```sh
 hulala host stop
 hulala host start
-# DSH：重启你自己的 dsh 进程
+# DSH: restart your own dsh process
 ```
 
-### 验证清单
+### Checklist
 
 ```sh
-# 1. 插件在 profile 里
+# 1. The plugin is in the profile
 hulala plugin --profile tui list
-# 期望：@deepseek-ai/dsh-base, @colinagent/hulala-bot
+# Expect: @deepseek-ai/dsh-base, @colinagent/hulala-bot
 
-# 2. Host 起来了
+# 2. The Host is up
 hulala host status
-# 期望："state": "running"
+# Expect: "state": "running"
 
-# 3. 插件真的加载了
+# 3. The plugin actually loaded
 grep "bot starting inside the Host" ~/.hulala/logs/host.log | tail -1
-# 期望：bot starting inside the Host; channels telegram
-#       （配了飞书就是 channels telegram, lark）
+# Expect: bot starting inside the Host; channels telegram
+#         (with Feishu configured: channels telegram, lark)
 
-# 4. 连接锁只有一个持有者
+# 4. Exactly one lock holder per credential
 ls ~/.hulala-bot/*.lock
-# 期望：每条渠道一个 .lock；内容是本机 Host 的 pid
+# Expect: one .lock per channel; contents are the local Host pid
 
-# 5. 给机器人发一句话
-# 期望：先出现占位消息，然后被流式替换成回答；TUI 里能看到同一个会话
+# 5. Message the bot
+# Expect: a placeholder appears, then gets replaced by the streaming answer;
+#         the same session is visible in the TUI
 ```
 
-飞书额外确认：
+Feishu extras:
 
 ```sh
-# 日志里有没有收到事件（首次配置时会有 ignored … not in allowlist）
+# Watch inbound events (the first run logs "ignored … not in allowlist")
 tail -f ~/.hulala/harness/config/hulala-bot/logs/bridge-$(date +%F).log
 ```
 
-日志位置：`~/.hulala/harness/config/hulala-bot/logs/`（DSH 在 `~/.dsh/config/hulala-bot/logs/`）。
+Logs live in `~/.hulala/harness/config/hulala-bot/logs/` (DSH: `~/.dsh/config/hulala-bot/logs/`).
 
 ---
 
-## 故障排查
+## Troubleshooting
 
-先看这两个地方，90% 的问题能直接定位：
+These two places explain most failures:
 
 ```sh
 tail -50 ~/.hulala/harness/config/hulala-bot/logs/bridge-$(date +%F).log
 grep -i "hulala-bot" ~/.hulala/logs/host.log | tail -20
 ```
 
-| 症状 / 报错原文 | 原因 | 处理 |
+| Symptom / exact text | Cause | Fix |
 |---|---|---|
-| `no channel configured: add a "telegram" or "lark" section` | 配置文件不存在或两段都没有 | 跑 `--init`，或检查 `HULALA_BOT_CONFIG` 指向的路径 |
-| `refusing to start Telegram with an empty allowlist` | 允许名单为空（拒绝是设计行为） | 加 `--telegram-allowed-user` |
-| `no Telegram bot token: set tokenRef …` | 钥匙串里没有条目，或引用名写错 | `security find-generic-password -s telegram -a bot-token -w` 确认；名字要和 `tokenRef` 一致 |
-| `lark.appId must look like cli_<16 hex>` | App ID 复制错/不是自建应用 | 回开发者后台复制 `cli_` + 16 位十六进制 |
-| `no Lark app secret: set lark.appSecretRef …` | 同上，secret 没进钥匙串 | 存 `lark/app-secret`，或设 `LARK_APP_SECRET` |
-| `this bot is already connected from another Host (pid …)` | 另一个 Host（DSH 或旧进程）正在用同一 token/app id | 停掉那个进程；确认它已退出后删掉报错里给出的 `.lock` |
-| Telegram 报 `getUpdates: Conflict: … (409)` | 两个进程在轮询同一个 bot token | 同上；另外检查有没有旧的独立桥进程 |
-| `proxy CONNECT failed: 403` | 代理拒绝 CONNECT | 检查代理是否允许该目标/是否要认证（`http://user:pass@host:port`） |
-| `connect ECONNREFUSED 127.0.0.1:7897` | 代理端口没开 | 启动 Clash/Surge，或改 `proxy` |
-| 飞书机器人完全不回话 | ① 订阅方式不是「长连接」② 没订阅 `im.message.receive_v1` ③ 没开机器人能力 ④ 可用范围不含你 ⑤ App Secret 错 | 按这五条逐项查；secret 错会在日志里出现 `99991663` 或 `tenant_access_token` 相关错误 |
-| 飞书私聊正常、群里不回 | 群里必须 @ 机器人 | @ 它再发；命令前可以带 @ |
-| 飞书审批按钮没反应 | 没添加 `card.action.trigger` 回调 | 后台补上这个回调，重启 Host |
-| 流式很慢 / 频繁限流 | `streamIntervalMs` 低于平台限制 | 调到 800 以上（飞书卡片更新有频率限制） |
-| 回复出现 `☑️ 已处理` | 这个审批已经在另一端处理过 | 正常，不是错误 |
-| 日志里 `ignored … (not in allowlist)` | 发送者不在名单里 | 用日志里的 id 补进允许名单并重启 |
-| 重启后行为没变 | 插件只在启动时读配置 | 确认进程真的重启了（`hulala host status` 的 pid 变了） |
+| `no channel configured: add a "telegram" or "lark" section` | No config file, or neither section | Run `--init`, or check what `HULALA_BOT_CONFIG` points at |
+| `refusing to start Telegram with an empty allowlist` | Empty allowlist (refusal is by design) | Add `--telegram-allowed-user` |
+| `no Telegram bot token: set tokenRef …` | No keychain entry, or the reference name differs | Check with `security find-generic-password -s telegram -a bot-token -w`; names must match `tokenRef` |
+| `lark.appId must look like cli_<16 hex>` | Wrong app id pasted, or not a self-built app | Copy `cli_` + 16 hex from the developer console |
+| `no Lark app secret: set lark.appSecretRef …` | Secret not in the keychain | Store `lark/app-secret`, or set `LARK_APP_SECRET` |
+| `this bot is already connected from another Host (pid …)` | Another Host (DSH or a stale process) uses the same token/app id | Stop it; once it is gone, remove the `.lock` path named in the error |
+| Telegram `getUpdates: Conflict: … (409)` | Two processes polling one bot token | Same as above; also look for an old standalone bridge process |
+| `proxy CONNECT failed: 403` | The proxy refused CONNECT | Check the proxy allows the target or needs auth (`http://user:pass@host:port`) |
+| `connect ECONNREFUSED 127.0.0.1:7897` | Nothing listening on the proxy port | Start Clash/Surge, or change `proxy` |
+| Feishu bot never answers | ① subscription mode is not "long connection" ② `im.message.receive_v1` not subscribed ③ bot capability off ④ availability excludes you ⑤ wrong app secret | Check all five; a wrong secret shows up as `99991663` / `tenant_access_token` errors in the log |
+| Feishu DM works, groups do not | The bot must be @-mentioned in groups | Mention it; a leading mention is fine before a command |
+| Feishu approval buttons do nothing | The `card.action.trigger` callback is missing | Add it in the console and restart the Host |
+| Streaming is slow / rate limited | `streamIntervalMs` is below the platform limit | Keep it at 800 or higher (Feishu card updates are rate limited) |
+| A reply says `☑️ 已处理` | That approval was already handled on another surface | Expected, not an error |
+| Log says `ignored … (not in allowlist)` | The sender is not allowlisted | Add that id to the allowlist and restart |
+| Nothing changed after a restart | The plugin only reads config at startup | Confirm the process really restarted (the pid in `hulala host status` changed) |
 
-调试用的日志行会带渠道名前缀：`telegram`、`lark`。凭据在写日志前会被替换成 `<secret>`，不会出现在文件里。
+Log lines from channels are prefixed with `telegram` or `lark`. Credentials are replaced with `<secret>` before anything is written.
 
 ---
 
-## 命令
+## Commands
 
-两个渠道命令一样：
+The same commands on both channels:
 
-| 命令 | 行为 |
+| Command | Behaviour |
 |---|---|
-| `/cwd` | 列出最近用过的目录，点一个就挂上去 |
-| `/cwd <path>` | 换挂载：该目录下最近的会话，没有就新建 |
-| `/new` | 在当前目录新建会话 |
-| `/sessions` | 最近 10 个会话，`*` 表示当前 |
-| `/switch <n>` | 切到第 n 个 |
-| `/status` | 会话、目录、运行状态 |
-| `/stop` | 停止当前回合 |
-| `/help` | 上面这些 |
+| `/cwd` | List recently used directories; tap one to mount it |
+| `/cwd <path>` | Switch mount: newest session under that directory, create one if none |
+| `/new` | Create a session in the current directory |
+| `/sessions` | Last 10 sessions, `*` marks the current one |
+| `/switch <n>` | Switch to the n-th |
+| `/status` | Session, directory, running state |
+| `/stop` | Cancel the running turn |
+| `/help` | All of the above |
 
-直接发文字就是提问。第一次说话会自动在 `defaultCwd` 里建会话并挂上。
+Plain text is a prompt. The first message creates a session under `defaultCwd` and mounts it.
 
-审批会以按钮出现（Telegram inline keyboard / 飞书卡片按钮），只有「允许这一次 / 拒绝」。请求里没有命令行文本，只有工具名与理由。
+Approvals arrive as buttons (Telegram inline keyboard / Feishu card actions): "allow once" or "reject". The request carries the tool name and reason, not the command line; showing the exact command would require a `callId` lookup in the session log.
 
 ---
 
-## 两个渠道的差异
+## How the channels differ
 
-| | Telegram | 飞书 / Lark |
+| | Telegram | Feishu / Lark |
 |---|---|---|
-| 传输 | Bot API 长轮询 | 长连接（WebSocket） |
-| 流式 | 反复编辑同一条消息 | 反复 patch 同一张卡片（飞书不能编辑文本消息） |
-| 按钮 | inline keyboard | 卡片 `action` + `card.action.trigger` |
-| 置顶状态栏 | 有（`📍 <目录>`） | 无；用 `/status` 看 |
-| "正在输入" | 有 | 飞书没有这个 API |
-| 单条上限 | 4096（内部按 4000 切） | 4000 字符一张卡片，超了续卡片 |
-| 群聊 | 直接收 | 必须 @ 机器人 |
+| Transport | Bot API long polling | Long connection (WebSocket) |
+| Streaming | Edits one message | Patches one card (Feishu cannot edit text messages) |
+| Buttons | Inline keyboard | Card `action` + `card.action.trigger` |
+| Pinned status | Yes (`📍 <directory>`) | No; use `/status` |
+| Typing indicator | Yes | Feishu has no such API |
+| Message limit | 4096 (split at 4000) | 4000 chars per card, then another card |
+| Groups | Any message | Must @-mention the bot |
 
-两个渠道可以同时开：各自挂各自的会话，审批同时出现在两边，先点的生效，另一边显示「已在其他端处理」。
-
----
-
-## 状态与安全
-
-- **状态目录**：`$DSH_HOME/config/hulala-bot/`，里面有 `config.json`、`bindings.json`（挂载表）、`receipts/`（去重账本，24h TTL）、`logs/`，权限 `0600`/`0700`。
-- **连接锁**：`~/.hulala-bot/<凭据摘要>.lock`，不在状态目录里，所以 DSH 和呼啦啦同时装插件时也只有一个在连。
-- **凭据**：只进钥匙串（或环境变量），日志写之前替换成 `<secret>`。
-- **边界**：白名单是唯一口令；消息正文、工具输出、贴出的路径都会经过 Telegram / 飞书的服务器。插件不给 Host 增加权限——它能做的事，TUI 也能做；权限仍由 Host 的 preset 决定。
-- **跨端取消**：插件模式下，另一端已经处理过的审批不会从这边被远程收走，只会在下次交互时显示「已在其他端处理」。
+Both channels can run together: each mounts its own sessions, approvals appear on both, the first answer wins, and the other surface shows that it was handled elsewhere.
 
 ---
 
-## 开发
+## State and safety
+
+- **State directory**: `$DSH_HOME/config/hulala-bot/` — `config.json`, `bindings.json` (mount table), `receipts/` (de-duplication, 24h TTL), `logs/`; permissions `0600`/`0700`.
+- **Connection lock**: `~/.hulala-bot/<digest>.lock`, outside every state directory, so DSH and Hulala with the same plugin still connect only once.
+- **Credentials**: keychain (or environment) only; redacted as `<secret>` before logging.
+- **Boundary**: the allowlist is the only password; message text, tool output and paths pass through Telegram's or Feishu's servers. The plugin grants the Host no new authority — anything it can do, the TUI can do; permissions still come from the Host's preset.
+- **Cross-surface cancellation**: in plugin mode an approval already handled elsewhere is not withdrawn from this surface; it shows "handled elsewhere" on the next interaction.
+
+---
+
+## Development
 
 ```bash
-node --test "tests/*.test.ts"                                  # 106 个用例
+node --test "tests/*.test.ts"                                  # 107 tests
 bun run typecheck
 bun run build                                                  # dist/index.mjs + dist/plugin.mjs
-node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # 对真 Host 跑一轮
+node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # one round against a real Host
 ```
 
-需要 Node ≥ 22.6。飞书的 REST 用注入的 `fetch` 测，长连接用假 transport 测，测试不需要租户、不需要网络。
+Node ≥ 22.6. Feishu REST is tested against an injected `fetch`, the long connection against a fake transport — no tenant, no network.
 
-版本约束：`engines.dsh` 声明 DSH 兼容范围（当前 `>=0.2.2-rc.1 <0.3.0`），装载器在 import 之前校验，不满足就跳过并写进 `skippedBundles`；`@deepseek-ai/dsh-*` 必须是 peerDependencies，避免出现第二份注册表。
+Version gate: `engines.dsh` declares the DSH range (`>=0.2.2-rc.1 <0.3.0`); the loader checks before import, skips incompatible bundles and reports them in `skippedBundles`; `@deepseek-ai/dsh-*` must stay peer dependencies so no second registry appears.
 
-更细的架构与坑：见仓库里的 `AGENTS.md`。
+Deeper architecture and traps: `AGENTS.md` in the repository.
 
-## 许可
+## License
 
-GPL-3.0-only。它链接的是 GPL 的 DeepSeek Harness / Hulala，不是专有代码。
+GPL-3.0-only. It links GPL DeepSeek Harness / Hulala, not proprietary code.
