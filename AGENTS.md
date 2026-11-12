@@ -66,13 +66,11 @@ node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>   # 对真 Host 跑一
 2. **`const on = ctx.remote.$on` 会丢 Cordis shadow-method 的 `this`**，报错会说「requires interactions=answer」，实际是解绑了。永远写成 `ctx.remote.$on(...)`。
 3. **本机默认 permission preset 直接放行危险命令**，所以 `rm -rf` 不会触发审批卡片；真机验审批要先切到 `workspace-write`。
 
-## 飞书的五个硬约束
+## 飞书的三个硬约束
 
 1. **文本消息改不了**。流式只能走交互卡片 + `PATCH /open-apis/im/v1/messages/:message_id`，所以每一轮都是一张卡片，未完成时反复 patch。没有置顶状态栏、没有 typing 指示。
 2. **事件必须走长连接**。Host 只绑 loopback，webhook 需要公网入口；长连接是唯一符合本地优先的订阅方式，同时要求后台把订阅方式设成「使用长连接」。
-3. **事件权限按聊天类型分开**：私聊要 `im:message.p2p_msg:readonly`，群里 @ 要 `im:message.group_at_msg.include_bot:readonly`，全群要 `im:message.group_msg`（敏感）。`im:message` 是 REST 数据权限，**不推事件**。加权限必须发新版本。
-4. **群聊只收真提及**：手打的 `@Hulala` 是普通文本，飞书不投递；必须从 @ 列表点选。文本里带 `@_user_1` 占位符，`stripMentions` 在解析命令前清掉，否则 `/cwd` 永远不是命令。
-5. **发送失败必须落日志**：`ReplyStream` 的 `onError` 把占位、流式、续发失败写进 bridge 日志；不写的话「没回」和「没收到」在日志里长得一模一样。
+3. **群聊只收 @ 消息**，文本里带 `@_user_1` 占位符；`stripMentions` 在解析命令前清掉，否则 `/cwd` 永远不是命令。
 
 ## 约定
 
