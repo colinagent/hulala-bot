@@ -146,20 +146,31 @@ You create the app in the developer console; this plugin only needs the app id a
 2. Enable the **bot capability**.
 3. Scopes. The event `im.message.receive_v1` is authorized **per chat type**, so a group scope does not deliver private messages:
 
-   | What it is for | Scope |
-   |---|---|
-   | Replying | `im:message:send_as_bot` |
-   | Private chat, user → bot | `im:message.p2p_msg:readonly` |
-   | Group, @-mentioning the bot | `im:message.group_at_msg:readonly` (or the `include_bot` variant) |
-   | Group, every message (optional) | `im:message.group_msg` |
+   | What it is for | Console name | Scope |
+   |---|---|---|
+   | Private chat, user → bot | 读取用户发给机器人的单聊消息 | `im:message.p2p_msg:readonly` |
+   | Group, @-mentioning the bot | 获取群组中其他机器人和用户@当前机器人的消息 | `im:message.group_at_msg.include_bot:readonly` |
+   | Group, every message (optional, sensitive) | 获取群组中所有消息 | `im:message.group_msg` |
+   | Replying | 以应用的身份发消息 | `im:message:send_as_bot` |
+   | Reading history / listing chats (optional) | 获取与发送单聊、群组消息 | `im:message`, `im:chat:readonly` |
 
-   `im:message` ("read and send p2p and group messages") is a **data** scope for REST calls; it does not make Feishu push events. Search the console by the Chinese name (e.g. 获取用户发给机器人的单聊消息) or switch the search filter to permission id.
+   The first three are what makes Feishu **push** `im.message.receive_v1`; they are alternatives per chat type, so having only the group scope leaves private messages undelivered. `im:message` is a REST **data** scope and does not deliver events. Search the console by the Chinese name or switch the filter to permission id.
 
    **Adding a scope requires a new app version and a publish.** It takes effect on the next message; the Host does not need a restart.
 
 4. **Events and Callbacks → subscription mode: receive events through a long connection.** Subscribe to `im.message.receive_v1` and add the `card.action.trigger` callback. **Do not** configure a webhook URL.
 5. **In a group, the bot only receives real mentions.** Type `@`, wait for the member list, and pick the bot; a hand-typed `@Hulala` is plain text and Feishu delivers nothing. Private chats need no mention.
 6. Publish a version, set its availability to yourself (or your team), then message the bot or add it to a group.
+
+Checklist before the first message:
+
+- [ ] Bot capability on
+- [ ] `im:message.p2p_msg:readonly` for private chat
+- [ ] `im:message.group_at_msg.include_bot:readonly` for group @ (optionally `im:message.group_msg`)
+- [ ] `im:message:send_as_bot` for replies
+- [ ] Subscription mode: long connection; event `im.message.receive_v1`; callback `card.action.trigger`
+- [ ] New version published, availability includes you
+- [ ] In a group: the `@` was picked from the member list, not typed
 
 Put the app secret in the keychain:
 
@@ -392,7 +403,7 @@ Both channels can run together: each mounts its own sessions, approvals appear o
 ## Development
 
 ```bash
-node --test "tests/*.test.ts"                                  # 107 tests
+node --test "tests/*.test.ts"                                  # 108 tests
 bun run typecheck
 bun run build                                                  # dist/index.mjs + dist/plugin.mjs
 node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # one round against a real Host

@@ -143,20 +143,31 @@ hulala plugin --profile tui exec hulala-bot --init --no-input \
 2. 开启**机器人能力**。
 3. 权限。`im.message.receive_v1` 是**按聊天类型分别授权**的，群权限不会顺带带来私聊消息：
 
-   | 用途 | 权限 |
-   |---|---|
-   | 机器人回复 | `im:message:send_as_bot` |
-   | 私聊：用户 → 机器人 | `im:message.p2p_msg:readonly`（获取用户发给机器人的单聊消息） |
-   | 群里 @ 机器人 | `im:message.group_at_msg:readonly`（或 `.include_bot` 变体） |
-   | 群里所有消息（可选） | `im:message.group_msg` |
+   | 用途 | 后台名称 | 权限 ID |
+   |---|---|---|
+   | 私聊：用户 → 机器人 | 读取用户发给机器人的单聊消息 | `im:message.p2p_msg:readonly` |
+   | 群里 @ 机器人 | 获取群组中其他机器人和用户@当前机器人的消息 | `im:message.group_at_msg.include_bot:readonly` |
+   | 群里所有消息（可选，敏感） | 获取群组中所有消息 | `im:message.group_msg` |
+   | 机器人回复 | 以应用的身份发消息 | `im:message:send_as_bot` |
+   | 读历史 / 列群（可选） | 获取与发送单聊、群组消息 | `im:message`、`im:chat:readonly` |
 
-   `im:message`（获取与发送单聊、群组消息）是给 REST 调用用的**数据权限**，不会让飞书推送事件。后台搜索用中文名（如「获取用户发给机器人的单聊消息」），或把筛选切到权限 ID。
+   前三项才是让飞书**推送** `im.message.receive_v1` 的权限，而且**按聊天类型各管各的**：只开群权限，私聊消息不会投递。`im:message` 是 REST 的**数据权限**，不负责推事件。搜索用中文名，或把筛选切到权限 ID。
 
    **加权限必须创建新版本并发布**，下一条消息生效，不用重启 Host。
 
 4. **事件与回调 → 订阅方式：使用长连接接收事件**。订阅 `im.message.receive_v1`，并添加卡片回调 `card.action.trigger`。**不要**配 webhook 地址。
 5. **群里只收“真提及”**：输入 `@`，等成员列表弹出后点选机器人。手打的 `@Hulala` 只是普通文本，飞书不会投递。私聊不需要 @。
 6. 发布版本，把可用范围设成你自己（或团队），然后单聊机器人或把它拉进群。
+
+第一条消息前的自检：
+
+- [ ] 机器人能力已开启
+- [ ] 私聊：`im:message.p2p_msg:readonly`
+- [ ] 群里 @：`im:message.group_at_msg.include_bot:readonly`（可选再开 `im:message.group_msg`）
+- [ ] 回复：`im:message:send_as_bot`
+- [ ] 订阅方式：长连接；事件 `im.message.receive_v1`；回调 `card.action.trigger`
+- [ ] 已创建并发布新版本，可用范围包含你
+- [ ] 群里发消息时，`@` 是从成员列表点选的，不是手打的
 
 App secret 放钥匙串：
 
@@ -388,7 +399,7 @@ grep -i "hulala-bot" ~/.hulala/logs/host.log | tail -20
 ## 开发
 
 ```bash
-node --test "tests/*.test.ts"                                  # 107 个用例
+node --test "tests/*.test.ts"                                  # 108 个用例
 bun run typecheck
 bun run build                                                  # dist/index.mjs + dist/plugin.mjs
 node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # 对真 Host 跑一轮
