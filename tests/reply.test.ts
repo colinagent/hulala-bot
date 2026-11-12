@@ -35,8 +35,9 @@ async function harness(options: {
   parseMode?: 'plain' | 'markdown'
   threadId?: string
   handle?: (method: string, body: Record<string, unknown>) => Response | undefined
-} = {}): Promise<{ calls: Call[]; chat: ChatKey; stream: ReplyStream }> {
+} = {}): Promise<{ calls: Call[]; chat: ChatKey; stream: ReplyStream; errors: string[] }> {
   const calls: Call[] = []
+  const errors: string[] = []
   const fake = recorder((method, body) => {
     calls.push({ method, body })
     return options.handle?.(method, body)
@@ -63,7 +64,15 @@ async function harness(options: {
     chatId: '1',
     ...(options.threadId === undefined ? {} : { threadId: options.threadId }),
   }
-  return { calls, chat, stream: new ReplyStream(channel, chat, { intervalMs: 0 }) }
+  return {
+    calls,
+    chat,
+    stream: new ReplyStream(channel, chat, {
+      intervalMs: 0,
+      onError: message => { errors.push(message) },
+    }),
+    errors,
+  }
 }
 
 /** Calls that changed the message itself, ignoring the typing indicator. */
@@ -146,4 +155,15 @@ test('an edit that changes nothing is success, not a failure', async () => {
   await stream.push('same')
   await stream.finish('same')
   assert.ok(!calls.some(call => call.method === 'deleteMessage'))
+})
+
+test('a send that cannot be retried is reported, not swallowed', async () => {
+  const { errors, stream } = await harness({
+    handle: (method) => method === 'sendMessage'
+      ? new Response(JSON.stringify({ ok: false, description: 'Bad Request: chat not found' }), { status: 400 })
+      : undefined,
+  })
+  await stream.begin()
+  await stream.finish('answer')
+  assert.ok(errors.some(message => message.includes('chat not found')), `no error reported: ${errors.join(' | ')}`)
 })

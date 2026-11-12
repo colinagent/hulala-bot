@@ -141,9 +141,22 @@ hulala plugin --profile tui exec hulala-bot --init --no-input \
 
 1. 在 [飞书开放平台](https://open.feishu.cn)（国际版 [Lark](https://open.larksuite.com)）建一个**企业自建应用**，拿到 App ID（`cli_` + 16 位十六进制）和 App Secret。
 2. 开启**机器人能力**。
-3. 权限至少：`im:message`、`im:message:send_as_bot`。后台会按实际接口提示还缺哪一项。
+3. 权限。`im.message.receive_v1` 是**按聊天类型分别授权**的，群权限不会顺带带来私聊消息：
+
+   | 用途 | 权限 |
+   |---|---|
+   | 机器人回复 | `im:message:send_as_bot` |
+   | 私聊：用户 → 机器人 | `im:message.p2p_msg:readonly`（获取用户发给机器人的单聊消息） |
+   | 群里 @ 机器人 | `im:message.group_at_msg:readonly`（或 `.include_bot` 变体） |
+   | 群里所有消息（可选） | `im:message.group_msg` |
+
+   `im:message`（获取与发送单聊、群组消息）是给 REST 调用用的**数据权限**，不会让飞书推送事件。后台搜索用中文名（如「获取用户发给机器人的单聊消息」），或把筛选切到权限 ID。
+
+   **加权限必须创建新版本并发布**，下一条消息生效，不用重启 Host。
+
 4. **事件与回调 → 订阅方式：使用长连接接收事件**。订阅 `im.message.receive_v1`，并添加卡片回调 `card.action.trigger`。**不要**配 webhook 地址。
-5. 发布版本，把可用范围设成你自己（或团队），然后在飞书里单聊机器人或把它拉进群（群里必须 @ 它）。
+5. **群里只收“真提及”**：输入 `@`，等成员列表弹出后点选机器人。手打的 `@Hulala` 只是普通文本，飞书不会投递。私聊不需要 @。
+6. 发布版本，把可用范围设成你自己（或团队），然后单聊机器人或把它拉进群。
 
 App secret 放钥匙串：
 
@@ -312,7 +325,9 @@ grep -i "hulala-bot" ~/.hulala/logs/host.log | tail -20
 | `proxy CONNECT failed: 403` | 代理拒绝 CONNECT | 检查代理是否允许该目标/是否要认证（`http://user:pass@host:port`） |
 | `connect ECONNREFUSED 127.0.0.1:7897` | 代理端口没开 | 启动 Clash/Surge，或改 `proxy` |
 | 飞书机器人完全不回话 | ① 订阅方式不是「长连接」② 没订阅 `im.message.receive_v1` ③ 没开机器人能力 ④ 可用范围不含你 ⑤ App Secret 错 | 按这五条逐项查；secret 错会在日志里出现 `99991663` 或 `tenant_access_token` 相关错误 |
-| 飞书私聊正常、群里不回 | 群里必须 @ 机器人 | @ 它再发；命令前可以带 @ |
+| 飞书群里发了没反应 | `@` 是手打的，不是提及；飞书不会把它推给机器人 | 输入 `@`，从成员列表点选机器人，再发 |
+| 飞书私聊没反应、群里正常 | 只开了群权限。私聊要单独开 `im:message.p2p_msg:readonly`，且要发新版本 | 加权限 → 创建版本 → 发布 → 再发一条 |
+| 飞书收到了但机器人不回 | 看日志有没有 `placeholder send failed` / `reply chunk failed` | 一般是缺 `im:message:send_as_bot`，或机器人被移出了会话 |
 | 飞书审批按钮没反应 | 没添加 `card.action.trigger` 回调 | 后台补上这个回调，重启 Host |
 | 流式很慢 / 频繁限流 | `streamIntervalMs` 低于平台限制 | 调到 800 以上（飞书卡片更新有频率限制） |
 | 回复出现 `☑️ 已处理` | 这个审批已经在另一端处理过 | 正常，不是错误 |

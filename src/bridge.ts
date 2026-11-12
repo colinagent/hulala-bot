@@ -618,7 +618,10 @@ export class Bridge {
 
   /** Build a reply stream for one conversation. */
   #replyFor(mount: Mount): ReplyStream {
-    return new ReplyStream(this.#channel(mount.key), mount.key, { intervalMs: this.#config.streamIntervalMs })
+    return new ReplyStream(this.#channel(mount.key), mount.key, {
+      intervalMs: this.#config.streamIntervalMs,
+      onError: message => { this.#log.error(`${keyOf(mount.key)}: ${message}`) },
+    })
   }
 
   /** Project one follow frame onto the conversation. */

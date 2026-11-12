@@ -297,6 +297,10 @@ export async function runInit(argv: readonly string[], env: NodeJS.ProcessEnv = 
     .filter((ref): ref is string => typeof ref === 'string' && ref !== '')
   console.log('store the credentials in the keychain, never in this file:')
   for (const ref of refs) printKeychain(ref)
+  if (document.lark !== undefined) {
+    console.log('Feishu: in a group the bot only receives real mentions — type @ and pick it;')
+    console.log('private chat needs im:message.p2p_msg:readonly, groups need im:message.group_at_msg:readonly.')
+  }
   console.log('restart the Host (or the bot process) to pick it up')
   return 0
 }

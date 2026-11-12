@@ -20,6 +20,14 @@ export interface ReplyOptions {
   readonly intervalMs: number
   /** Keep the chat header showing "typing" while the turn runs. */
   readonly typing?: boolean | undefined
+  /**
+   * Reports a send or edit that could not be retried.
+   *
+   * Without this the stream degrades silently and the only symptom is "the bot
+   * answered nothing", which is indistinguishable from never receiving the
+   * message in the first place.
+   */
+  readonly onError?: ((message: string) => void) | undefined
 }
 
 /** Consecutive edit failures tolerated before falling back to one final send. */
@@ -30,6 +38,11 @@ const TYPING_INTERVAL_MS = 4000
 
 /** Placeholder that later edits replace. */
 const PLACEHOLDER = '⋯ 正在思考'
+
+/** One line of an error, for the log. */
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
 
 /**
  * Project agent text for one channel.
@@ -84,8 +97,9 @@ export class ReplyStream {
       this.#lastText = placeholder.text
       this.#lastSentAt = Date.now()
       this.#startTyping()
-    } catch {
+    } catch (error) {
       this.#degraded = true
+      this.#options.onError?.(`placeholder send failed: ${describe(error)}`)
     }
   }
 
@@ -153,7 +167,10 @@ export class ReplyStream {
         return
       }
       this.#failures += 1
-      if (this.#failures >= MAX_FAILURES) this.#degraded = true
+      if (this.#failures >= MAX_FAILURES && !this.#degraded) {
+        this.#degraded = true
+        this.#options.onError?.(`streaming edits failed ${String(MAX_FAILURES)} times: ${describe(error)}`)
+      }
     }
   }
 
@@ -199,9 +216,10 @@ export class ReplyStream {
       try {
         await this.#channel.send(this.#chat, rest)
         return
-      } catch {
+      } catch (error) {
         // The channel already retried in plain text; losing the tail beats
         // looping on a chat that refuses the message.
+        this.#options.onError?.(`reply chunk failed: ${describe(error)}`)
         return
       }
     }

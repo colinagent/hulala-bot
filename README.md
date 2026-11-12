@@ -144,9 +144,22 @@ You create the app in the developer console; this plugin only needs the app id a
 
 1. Create a **self-built enterprise app** at [Feishu Open Platform](https://open.feishu.cn) (international: [Lark](https://open.larksuite.com)) and copy the App ID (`cli_` + 16 hex) and App Secret.
 2. Enable the **bot capability**.
-3. Scopes: at least `im:message` and `im:message:send_as_bot`. The console tells you which one is still missing for a given API.
+3. Scopes. The event `im.message.receive_v1` is authorized **per chat type**, so a group scope does not deliver private messages:
+
+   | What it is for | Scope |
+   |---|---|
+   | Replying | `im:message:send_as_bot` |
+   | Private chat, user → bot | `im:message.p2p_msg:readonly` |
+   | Group, @-mentioning the bot | `im:message.group_at_msg:readonly` (or the `include_bot` variant) |
+   | Group, every message (optional) | `im:message.group_msg` |
+
+   `im:message` ("read and send p2p and group messages") is a **data** scope for REST calls; it does not make Feishu push events. Search the console by the Chinese name (e.g. 获取用户发给机器人的单聊消息) or switch the search filter to permission id.
+
+   **Adding a scope requires a new app version and a publish.** It takes effect on the next message; the Host does not need a restart.
+
 4. **Events and Callbacks → subscription mode: receive events through a long connection.** Subscribe to `im.message.receive_v1` and add the `card.action.trigger` callback. **Do not** configure a webhook URL.
-5. Publish a version, set its availability to yourself (or your team), then message the bot or add it to a group (it must be @-mentioned in groups).
+5. **In a group, the bot only receives real mentions.** Type `@`, wait for the member list, and pick the bot; a hand-typed `@Hulala` is plain text and Feishu delivers nothing. Private chats need no mention.
+6. Publish a version, set its availability to yourself (or your team), then message the bot or add it to a group.
 
 Put the app secret in the keychain:
 
@@ -316,7 +329,9 @@ grep -i "hulala-bot" ~/.hulala/logs/host.log | tail -20
 | `proxy CONNECT failed: 403` | The proxy refused CONNECT | Check the proxy allows the target or needs auth (`http://user:pass@host:port`) |
 | `connect ECONNREFUSED 127.0.0.1:7897` | Nothing listening on the proxy port | Start Clash/Surge, or change `proxy` |
 | Feishu bot never answers | ① subscription mode is not "long connection" ② `im.message.receive_v1` not subscribed ③ bot capability off ④ availability excludes you ⑤ wrong app secret | Check all five; a wrong secret shows up as `99991663` / `tenant_access_token` errors in the log |
-| Feishu DM works, groups do not | The bot must be @-mentioned in groups | Mention it; a leading mention is fine before a command |
+| Feishu group message ignored | The `@` was typed, not picked — plain text is not a mention, and Feishu does not deliver it | Type `@`, pick the bot from the member list, then send |
+| Feishu private chat ignored while groups work | Only the group scope is granted. Private chat needs `im:message.p2p_msg:readonly`, and adding it requires a new published version | Add the scope, publish a version, send again |
+| Feishu message arrives but the bot never replies | Check the log for `placeholder send failed` / `reply chunk failed` | Usually a missing `im:message:send_as_bot` or the bot was removed from the chat |
 | Feishu approval buttons do nothing | The `card.action.trigger` callback is missing | Add it in the console and restart the Host |
 | Streaming is slow / rate limited | `streamIntervalMs` is below the platform limit | Keep it at 800 or higher (Feishu card updates are rate limited) |
 | A reply says `☑️ 已处理` | That approval was already handled on another surface | Expected, not an error |
