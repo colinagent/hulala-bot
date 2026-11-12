@@ -2,7 +2,7 @@
 
 把这个机器上的 DeepSeek Harness agent 接到 Telegram 上。手机发一句话，本机的 Host 执行，回复流式回到同一个对话；`/cwd` 切换这个对话挂载哪个会话——和 TUI 里切换会话是同一件事。
 
-两种 Host 都能接：作为 **DSH 插件**装进 Host（DSH 与呼啦啦都支持），或者作为**独立进程**连上去。
+DSH 原生和呼啦啦都用同一种方式接：**装成 Host 插件**，进 profile，随 Host 起落。
 
 ## 它是什么
 
@@ -88,7 +88,7 @@ hulala plugin --profile tui exec dsh-telegram --init
 1. 一个 bot：跟 [@BotFather](https://t.me/BotFather) 说 `/newbot`，拿到 token。
 2. 你自己的 Telegram user id（可以问 [@userinfobot](https://t.me/userinfobot)）。
 3. `pnpm` 在 PATH 上（两种 Host 的插件命令都转发给它）。
-4. 走源码或独立进程时：Node.js ≥ 22.6（直接用 Node 的类型剥离跑 `.ts` 源码）。
+4. 从源码跑 `--init` 时需要 Node.js ≥ 22.6。
 
 token 放系统钥匙串，不写配置文件：
 
