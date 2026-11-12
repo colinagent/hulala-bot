@@ -1,6 +1,6 @@
 {
   "name": "@colinagent/hulala-bot",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "license": "GPL-3.0-only",
   "type": "module",
   "engines": {
