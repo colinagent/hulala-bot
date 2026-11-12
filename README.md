@@ -2,7 +2,7 @@
 
 Put the DeepSeek Harness agent running on this machine on **Telegram** and **Feishu / Lark**. Send one sentence from your phone, the local Host runs it, and the answer streams back into the same conversation; `/cwd` changes which session that conversation is mounted to — the same thing switching sessions in the TUI does.
 
-Native DSH and Hulala attach the same way: **install it as a Host plugin**, put it in a profile, and it lives and dies with the Host. This file is also the npm page; the Chinese version lives in [docs/README.zh-CN.md](docs/README.zh-CN.md).
+Native DSH and Hulala attach the same way: **install it as a Host plugin**, put it in a profile, and it lives and dies with the Host. This file is also the npm page; the Chinese version lives in [docs/README.zh-CN.md](https://github.com/colinagent/hulala-bot/blob/main/docs/README.zh-CN.md).
 
 ---
 
