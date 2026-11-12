@@ -30,15 +30,6 @@ export interface LarkMessageEvent {
   }
 }
 
-/** One `application.bot.menu_v6` click: the bot menu has no chat context. */
-export interface LarkMenuEvent {
-  readonly event_id?: string
-  readonly event_key?: string
-  readonly operator?: {
-    readonly operator_id?: { readonly open_id?: string }
-  }
-}
-
 /** One `card.action.trigger` callback, in both observed shapes. */
 export interface LarkActionEvent {
   readonly context?: { readonly open_message_id?: string; readonly open_chat_id?: string }
@@ -52,7 +43,6 @@ export interface LarkActionEvent {
 export interface LarkHandlers {
   readonly message: (event: LarkMessageEvent) => void
   readonly action: (event: LarkActionEvent) => Promise<unknown>
-  readonly menu: (event: LarkMenuEvent) => void
 }
 
 /** A long connection; replaceable in tests. */
@@ -91,7 +81,6 @@ export function createSdkTransport(options: LarkTransportOptions): LarkTransport
           handlers.message(event)
         },
         'card.action.trigger': async (event: LarkActionEvent) => await handlers.action(event),
-        'application.bot.menu_v6': (event: LarkMenuEvent) => { handlers.menu(event) },
       })
       const ws = new sdk.WSClient({
         appId: options.appId,

@@ -167,16 +167,6 @@ hulala plugin --profile tui exec hulala-bot --init --no-input \
 5. **群里只收“真提及”**：输入 `@`，等成员列表弹出后点选机器人。手打的 `@Hulala` 只是普通文本，飞书不会投递。私聊不需要 @。
 6. 发布版本，把可用范围设成你自己（或团队），然后单聊机器人或把它拉进群。
 
-#### 命令菜单（可选）
-
-飞书没有让机器人自己发布菜单的接口——Telegram 的 `setMyCommands` 在这里没有对应物，菜单属于应用配置。配一次：
-
-1. 应用能力 → 机器人 → 自定义菜单：开启，然后给每个命令加一项，类型选**事件**，事件 key 用 `cmd_help`、`cmd_cwd`、`cmd_new`、`cmd_sessions`、`cmd_status`、`cmd_stop`。
-2. 事件与回调：订阅 `application.bot.menu_v6`。
-3. 发布新版本。
-
-点菜单会在你与机器人的**私聊**里执行对应命令；私聊不存在时机器人自己开一个。key 写成 `cmd_cwd`、`cwd`、`/cwd` 都可以。群里的菜单点击同样回到私聊执行，因为事件里没有 chat id。
-
 第一条消息前的自检：
 
 - [ ] 机器人能力已开启
@@ -396,7 +386,6 @@ grep -i "hulala-bot" ~/.hulala/logs/host.log | tail -20
 | 流式 | 反复编辑同一条消息 | 反复 patch 同一张卡片（飞书不能编辑文本消息） |
 | 按钮 | inline keyboard | 卡片 `action` + `card.action.trigger` |
 | 置顶状态栏 | 有（`📍 <目录>`） | 无；用 `/status` 看 |
-| 命令菜单 | 机器人自己发布（`setMyCommands`） | 控制台配机器人菜单，机器人只处理点击 |
 | "正在输入" | 有 | 飞书没有这个 API |
 | 单条上限 | 4096（内部按 4000 切） | 4000 字符一张卡片，超了续卡片 |
 | 群聊 | 直接收 | 必须 @ 机器人 |

@@ -170,16 +170,6 @@ You create the app in the developer console; this plugin only needs the app id a
 5. **In a group, the bot only receives real mentions.** Type `@`, wait for the member list, and pick the bot; a hand-typed `@Hulala` is plain text and Feishu delivers nothing. Private chats need no mention.
 6. Publish a version, set its availability to yourself (or your team), then message the bot or add it to a group.
 
-#### Bot menu (optional)
-
-Feishu has no API for a bot to publish its own menu — unlike Telegram's `setMyCommands`, the menu is app configuration. Set it up once:
-
-1. 应用能力 → 机器人 → 自定义菜单: enable it and add one item per command, type **event**, with these event keys: `cmd_help`, `cmd_cwd`, `cmd_new`, `cmd_sessions`, `cmd_status`, `cmd_stop`.
-2. 事件与回调: subscribe `application.bot.menu_v6`.
-3. Publish a new version.
-
-A click runs that command in your private chat with the bot; if that chat does not exist yet the bot opens it. The key may be written `cmd_cwd`, `cwd` or `/cwd`. Menu clicks in a group still answer in private chat, because the event carries no chat id.
-
 Checklist before the first message:
 
 - [ ] Bot capability on
@@ -400,7 +390,6 @@ Approvals arrive as buttons (Telegram inline keyboard / Feishu card actions): "a
 | Streaming | Edits one message | Patches one card (Feishu cannot edit text messages) |
 | Buttons | Inline keyboard | Card `action` + `card.action.trigger` |
 | Pinned status | Yes (`📍 <directory>`) | No; use `/status` |
-| Command menu | Published by the bot (`setMyCommands`) | Console-configured bot menu; the bot only handles its clicks |
 | Typing indicator | Yes | Feishu has no such API |
 | Message limit | 4096 (split at 4000) | 4000 chars per card, then another card |
 | Groups | Any message | Must @-mention the bot |

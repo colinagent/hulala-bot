@@ -42,7 +42,7 @@ function fakePlatform(plan: (call: Call) => unknown | undefined = () => undefine
       })
     }
     if (call.method === 'POST') {
-      return new Response(JSON.stringify({ code: 0, msg: 'ok', data: { message_id: 'om_1', chat_id: 'oc_p2p' } }), {
+      return new Response(JSON.stringify({ code: 0, msg: 'ok', data: { message_id: 'om_1' } }), {
         headers: { 'content-type': 'application/json' },
       })
     }
@@ -104,16 +104,6 @@ test('an expired token is refreshed once and the call retried', async () => {
   const api = new LarkApi({ appId: 'cli_0123456789abcdef', appSecret: 's', baseUrl: 'http://fake/open-apis', fetch: platform.fetch })
   assert.equal(await api.sendCard('oc_1', '{}'), 'om_1')
   assert.equal(platform.calls.filter(call => call.url.includes('tenant_access_token')).length, 2)
-})
-
-test('a card can be sent to one user by open id, and names the p2p chat', async () => {
-  const platform = fakePlatform()
-  const api = new LarkApi({ appId: 'cli_0123456789abcdef', appSecret: 's', baseUrl: 'http://fake/open-apis', fetch: platform.fetch })
-  const sent = await api.sendCardToUser('ou_1', '{"a":1}')
-  assert.deepEqual(sent, { messageId: 'om_1', chatId: 'oc_p2p' })
-  const create = platform.calls.find(call => call.url.startsWith('/open-apis/im/v1/messages?'))
-  assert.equal(create?.url, '/open-apis/im/v1/messages?receive_id_type=open_id')
-  assert.equal(create?.body.receive_id, 'ou_1')
 })
 
 test('a card is sent as an interactive message with the card as JSON content', async () => {
@@ -245,62 +235,6 @@ test('a card action becomes a callback and returns its toast', async () => {
       action: { value: { data: 'approve:a1' } },
     })
     assert.deepEqual(again, { toast: { type: 'success', content: '已处理' } })
-  } finally {
-    controller.abort()
-    await tick()
-  }
-})
-
-test('a menu click runs its command in the presser private chat', async () => {
-  const { transport, events, controller } = await channelHarness()
-  try {
-    // First message teaches the channel the p2p chat.
-    transport.handlers?.message({
-      event_id: 'm1',
-      sender: { sender_type: 'user', sender_id: { open_id: 'ou_1' } },
-      message: { message_id: 'om_1', chat_id: 'oc_p2p', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text: 'hi' }) },
-    })
-    await tick()
-    transport.handlers?.menu({ event_id: 'm2', event_key: 'cmd_status', operator: { operator_id: { open_id: 'ou_1' } } })
-    await tick()
-    const command = events.at(-1)
-    assert.deepEqual(command, {
-      kind: 'message',
-      chat: { channel: 'lark', chatId: 'oc_p2p' },
-      userId: 'ou_1',
-      text: '/status',
-      fromBot: false,
-      messageId: 'm2',
-    })
-  } finally {
-    controller.abort()
-    await tick()
-  }
-})
-
-test('a first menu click opens the p2p chat, runs the command and cleans up', async () => {
-  const { transport, events, calls, controller } = await channelHarness()
-  try {
-    transport.handlers?.menu({ event_id: 'm3', event_key: '/cwd', operator: { operator_id: { open_id: 'ou_1' } } })
-    await tick()
-    const event = events.at(-1) as { text?: string; chat?: { chatId?: string } }
-    assert.equal(event.text, '/cwd')
-    assert.equal(event.chat?.chatId, 'oc_p2p')
-    assert.ok(calls.some(call => call.url.includes('receive_id_type=open_id')), 'no p2p card sent')
-    assert.ok(calls.some(call => call.method === 'DELETE'), 'placeholder not removed')
-  } finally {
-    controller.abort()
-    await tick()
-  }
-})
-
-test('a menu click from outside the allowlist does nothing', async () => {
-  const { transport, events, calls, controller } = await channelHarness()
-  try {
-    transport.handlers?.menu({ event_id: 'm5', event_key: 'help', operator: { operator_id: { open_id: 'ou_stranger' } } })
-    await tick()
-    assert.deepEqual(events, [])
-    assert.equal(calls.filter(call => call.method === 'POST').length, 0)
   } finally {
     controller.abort()
     await tick()

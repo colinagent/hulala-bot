@@ -22,7 +22,7 @@ import { Log } from '../log.ts'
 import { UpdateLedger } from '../store/ledger.ts'
 import { LarkApi, LarkError } from './api.ts'
 import { buildCard, stripMentions } from './card.ts'
-import type { LarkActionEvent, LarkMenuEvent, LarkMessageEvent, LarkTransport } from './ws.ts'
+import type { LarkActionEvent, LarkMessageEvent, LarkTransport } from './ws.ts'
 
 /** What the Lark channel needs from outside. */
 export interface LarkChannelOptions {
@@ -45,8 +45,6 @@ export class LarkChannel implements Channel {
   readonly #log: Log
   /** Toast text for the callback currently being handled, keyed by message id. */
   readonly #toasts = new Map<string, string>()
-  /** Private chat per user, learned from inbound p2p messages and menu replies. */
-  readonly #p2pChats = new Map<string, string>()
 
   /** @param options - client, transport, configuration and collaborators. */
   constructor(options: LarkChannelOptions) {
@@ -60,11 +58,6 @@ export class LarkChannel implements Channel {
   /** @param text - agent Markdown; cards understand it as `lark_md`. */
   format(text: string): string {
     return text
-  }
-
-  /** Allowlist entry for a user with no chat context (bot menu clicks). */
-  #allowedUser(userId: string): boolean {
-    return this.#config.allowedUsers.includes(userId)
   }
 
   /** Allowlist: either list may admit; both empty refuses everything. */
@@ -124,7 +117,6 @@ export class LarkChannel implements Channel {
     await this.#transport.start({
       message: event => { void this.#onMessage(event, onEvent) },
       action: event => this.#onAction(event, onEvent),
-      menu: event => { void this.#onMenu(event, onEvent) },
     })
     await new Promise<void>(resolve => {
       if (signal.aborted) { resolve(); return }
@@ -143,7 +135,6 @@ export class LarkChannel implements Channel {
       const userId = event.sender?.sender_id?.open_id
       if (userId === undefined) return
       const chatId = message.chat_id
-      if (message.chat_type === 'p2p') this.#p2pChats.set(userId, chatId)
       if (!this.#allowed(chatId, userId)) {
         this.#log.info(`ignored chat=${chatId} from=${userId} (not in allowlist)`)
         return
@@ -169,49 +160,6 @@ export class LarkChannel implements Channel {
       })
     } catch (error) {
       this.#log.error(`lark message failed: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-
-  /**
-   * Run one bot-menu click as a command in the presser's private chat.
-   *
-   * A menu click carries no chat id — only the operator's open id — so the
-   * command runs in p2p. When that chat is not known yet, one placeholder card
-   * to the open id opens (or finds) it and names it in the response; the
-   * placeholder is deleted once the command has answered.
-   */
-  async #onMenu(event: LarkMenuEvent, onEvent: (event: InboundEvent) => Promise<void>): Promise<void> {
-    const userId = event.operator?.operator_id?.open_id
-    const name = menuCommand(event.event_key)
-    if (userId === undefined || name === undefined) return
-    if (!this.#allowedUser(userId)) {
-      this.#log.info(`ignored menu ${name} from ${userId} (not in allowlist)`)
-      return
-    }
-    if (this.#ledger.seen(event.event_id ?? `menu:${userId}:${name}`)) return
-    await this.#ledger.flush().catch(() => undefined)
-    let chatId = this.#p2pChats.get(userId)
-    let placeholder: string | undefined
-    try {
-      if (chatId === undefined) {
-        const sent = await this.#api.sendCardToUser(userId, this.#card('⋯', {}))
-        chatId = sent.chatId
-        placeholder = sent.messageId
-        this.#p2pChats.set(userId, chatId)
-      }
-      this.#log.info(`menu ${name} from ${userId} in ${chatId}`)
-      await onEvent({
-        kind: 'message',
-        chat: { channel: 'lark', chatId },
-        userId,
-        text: `/${name}`,
-        fromBot: false,
-        messageId: event.event_id ?? `menu:${name}`,
-      })
-    } catch (error) {
-      this.#log.error(`menu ${name} failed: ${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      if (placeholder !== undefined) await this.#api.deleteMessage(placeholder).catch(() => undefined)
     }
   }
 
@@ -270,17 +218,4 @@ function actionData(event: LarkActionEvent): string | undefined {
     return typeof data === 'string' ? data : undefined
   }
   return undefined
-}
-
-/**
- * Command name behind one menu item.
- *
- * The console accepts any event key, so all three spellings work: `cmd_cwd`,
- * `cwd`, and `/cwd`.
- * @param key - event key from the click.
- * @returns the command name, or undefined when this item is not a command.
- */
-function menuCommand(key: string | undefined): string | undefined {
-  const name = (key ?? '').replace(/^\//, '').replace(/^cmd_/, '')
-  return name === '' ? undefined : name
 }

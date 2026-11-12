@@ -179,29 +179,6 @@ export class LarkApi {
   }
 
   /**
-   * Send one interactive card to a user's private chat.
-   *
-   * The bot menu carries no chat id, only the operator's open id, so this is the
-   * only way to answer a menu click. Feishu opens the p2p chat when it does not
-   * exist yet, and the response names it, which is what lets the next click run
-   * a session command in the same conversation.
-   * @param openId - `ou_…` user id.
-   * @param content - card JSON.
-   * @returns the new message and the p2p chat it landed in.
-   */
-  async sendCardToUser(openId: string, content: string): Promise<{ messageId: string; chatId: string }> {
-    const envelope = await this.#request<{ message_id: string; chat_id: string }>('im/v1/messages', {
-      method: 'POST',
-      query: 'receive_id_type=open_id',
-      body: { receive_id: openId, msg_type: 'interactive', content },
-    })
-    const messageId = envelope.data?.message_id
-    const chatId = envelope.data?.chat_id
-    if (messageId === undefined || chatId === undefined) throw new Error('Lark returned no message id')
-    return { messageId, chatId }
-  }
-
-  /**
    * Replace the content of one card this app sent.
    * @param messageId - `om_…` message id.
    * @param content - card JSON.
