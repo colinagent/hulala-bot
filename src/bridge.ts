@@ -121,7 +121,6 @@ export class Bridge {
   #backend: HostBackend | undefined
   #connecting: Promise<HostBackend> | undefined
   #sequence = 0
-  #defaultSession: string | undefined
 
   /** @param options - configuration and collaborators. */
   constructor(options: BridgeOptions) {
@@ -220,7 +219,6 @@ export class Bridge {
     if (backend === undefined) return
     this.#log.error(`host connection lost: ${reason}`)
     this.#backend = undefined
-    this.#defaultSession = undefined
     for (const key of [...this.#pending.keys()]) this.#settle(key, 'cancelled', '')
     for (const mount of this.#mounts.values()) mount.abort.abort()
     this.#mounts.clear()
@@ -535,21 +533,20 @@ export class Bridge {
     }
   }
 
-  /** First-use mount: newest session in the default directory, else a new one. */
+  /**
+   * First-use mount: a session of this conversation's own.
+   *
+   * Sharing one session across conversations would stream every turn into every
+   * chat mounted to it — a private chat and an unrelated group would echo each
+   * other. Sharing stays available, but only explicitly: `/cwd` mounts the
+   * newest session under a directory, and `/switch` picks one from the list.
+   */
   async #default(): Promise<string | undefined> {
-    if (this.#defaultSession !== undefined) return this.#defaultSession
     const backend = await this.#ensureHost()
     const remote = backend.ctx.remote
     const path = this.#config.defaultCwd
     const workspaceId = (unwrap(await remote.workspace.create({ path })) as { workspace: { workspaceId: string } }).workspace.workspaceId
-    const listed = unwrap(await remote.session.list({})) as { items: SessionSummary[] }
-    const items = listed.items
-      .filter(item => item.origin !== 'subagent' && item.cwd === path)
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-    const sessionId = items[0]?.sessionId
-      ?? (unwrap(await remote.session.create({ workspaceId: workspaceId as never })) as { sessionId: string }).sessionId
-    this.#defaultSession = sessionId
-    return sessionId
+    return (unwrap(await remote.session.create({ workspaceId: workspaceId as never })) as { sessionId: string }).sessionId
   }
 
   /** Mount one conversation and start following its session. */

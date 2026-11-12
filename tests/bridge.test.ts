@@ -399,3 +399,17 @@ test('one approval reaches both surfaces and one answer closes both', async () =
     await context.stop()
   }
 })
+
+test('two conversations get their own session instead of sharing one', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '你好'))
+    await context.telegram.until(() => context.host.prompts.length === 1)
+    context.telegram.push(messageUpdate(2, 20, 1, '你好'))
+    await context.telegram.until(() => context.host.prompts.length === 2)
+    assert.notEqual(context.host.prompts[0]?.sessionId, context.host.prompts[1]?.sessionId)
+    assert.equal(context.host.created, 2)
+  } finally {
+    await context.stop()
+  }
+})

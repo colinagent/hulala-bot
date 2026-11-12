@@ -376,7 +376,7 @@ The same commands on both channels:
 | `/stop` | Cancel the running turn |
 | `/help` | All of the above |
 
-Plain text is a prompt. The first message creates a session under `defaultCwd` and mounts it.
+Plain text is a prompt. The first message creates a session under `defaultCwd` and mounts it — **one session per conversation**, so a private chat never echoes into a group. Sharing is explicit: `/cwd <path>` mounts the newest session under that directory, and `/switch` picks one from the list.
 
 Approvals arrive as buttons (Telegram inline keyboard / Feishu card actions): "allow once" or "reject". The request carries the tool name and reason, not the command line; showing the exact command would require a `callId` lookup in the session log.
 
