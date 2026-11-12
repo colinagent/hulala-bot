@@ -86,6 +86,14 @@ hulala plugin --profile tui list    # 依赖里有 @colinagent/hulala-bot
 
 卸载：`hulala plugin --profile tui remove @colinagent/hulala-bot`，然后重启 Host。
 
+升级要两条命令，因为 `add` 会沿用 profile 里已有的版本范围，不会把已装的版本往前推：
+
+```sh
+hulala plugin --profile tui remove @colinagent/hulala-bot
+hulala install bot          # 或：hulala plugin --profile tui add @colinagent/hulala-bot
+hulala host stop && hulala host start
+```
+
 ---
 
 ## 配置

@@ -89,6 +89,14 @@ hulala plugin --profile tui list    # @colinagent/hulala-bot is in the dependenc
 
 Uninstall: `hulala plugin --profile tui remove @colinagent/hulala-bot`, then restart the Host.
 
+Updating takes two commands, because `add` alone keeps the range already in the profile and will not move an existing install:
+
+```sh
+hulala plugin --profile tui remove @colinagent/hulala-bot
+hulala install bot          # or: hulala plugin --profile tui add @colinagent/hulala-bot
+hulala host stop && hulala host start
+```
+
 ---
 
 ## Configure
