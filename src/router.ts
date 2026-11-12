@@ -30,7 +30,7 @@ export const HELP = [
   '把手机接到本机的 Hulala agent 上。',
   '',
   '/cwd            列出最近用过的目录，点一个就挂上去',
-  '/cwd <path>     直接指定目录（没有会话就新建）',
+  '/cwd <path>     换到该目录并新建会话',
   '/new            在当前目录新建会话',
   '/sessions       最近会话',
   '/switch <n>     切换到第 n 个',

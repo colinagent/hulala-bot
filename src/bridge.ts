@@ -415,7 +415,14 @@ export class Bridge {
     }
   }
 
-  /** Switch the mount to the newest session under a directory. */
+  /**
+   * Move this conversation to a directory with a new session.
+   *
+   * `/cwd` deliberately does not resume the newest session under that directory:
+   * resuming is `/sessions` + `/switch`, and doing it implicitly is how two
+   * unrelated conversations ended up sharing one session. A directory change is
+   * a new conversation.
+   */
   async #switchDirectory(chat: ChatKey, raw: string): Promise<void> {
     const path = resolve(expandHome(raw))
     const info = await stat(path).catch(() => undefined)
@@ -426,18 +433,9 @@ export class Bridge {
     const backend = await this.#ensureHost()
     const remote = backend.ctx.remote
     const workspaceId = (unwrap(await remote.workspace.create({ path })) as { workspace: { workspaceId: string } }).workspace.workspaceId
-    const listed = unwrap(await remote.session.list({})) as { items: SessionSummary[] }
-    const items = listed.items
-      .filter(item => item.origin !== 'subagent' && item.cwd === path)
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-    const existing = items[0]
-    const sessionId = existing === undefined
-      ? (unwrap(await remote.session.create({ workspaceId: workspaceId as never })) as { sessionId: string }).sessionId
-      : existing.sessionId
+    const sessionId = (unwrap(await remote.session.create({ workspaceId: workspaceId as never })) as { sessionId: string }).sessionId
     await this.#mount(chat, sessionId)
-    await this.#say(chat, existing === undefined
-      ? `已在 ${path} 新建并挂载会话。`
-      : `已挂载 ${path} 下最近的会话。`)
+    await this.#say(chat, `已在 ${path} 新建会话。`)
   }
 
   /** Create a session in the mounted (or default) directory. */

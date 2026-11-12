@@ -183,13 +183,15 @@ test('fails closed when no conversation is mounted', async () => {
   }
 })
 
-test('/cwd mounts the newest session under an existing directory', async () => {
+test('/cwd starts a new session even when that directory already has one', async () => {
   const context = await harness()
   try {
     context.host.sessions.push({ sessionId: 'old', cwd: context.defaultCwd, updatedAt: 1, running: false })
     context.telegram.push(messageUpdate(1, 10, 1, `/cwd ${context.defaultCwd}`))
-    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('已挂载')))
-    assert.deepEqual(context.host.followRequests.at(-1) && (context.host.followRequests.at(-1) as { address: { sessionId: string } }).address.sessionId, 'old')
+    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('新建会话')))
+    const followed = (context.host.followRequests.at(-1) as { address: { sessionId: string } }).address.sessionId
+    assert.notEqual(followed, 'old')
+    assert.equal(context.host.created, 1)
   } finally {
     await context.stop()
   }
@@ -300,7 +302,8 @@ test('a directory button mounts the chosen path', async () => {
     context.telegram.push(callbackUpdate(2, 10, 1, Number(picker?.body.message_id ?? 1), 'cwd:1'))
     await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes(beta)))
     const last = context.host.followRequests.at(-1) as { address: { sessionId: string } }
-    assert.equal(last.address.sessionId, 'b')
+    const followed = context.host.sessions.find(session => session.sessionId === last.address.sessionId)
+    assert.equal(followed?.cwd, beta)
   } finally {
     await context.stop()
   }
@@ -338,7 +341,7 @@ test('remounting the same directory does not pile up pinned messages', async () 
     context.telegram.push(messageUpdate(1, 10, 1, `/cwd ${context.defaultCwd}`))
     await context.telegram.until(() => context.telegram.of('pinChatMessage').length === 1)
     context.telegram.push(messageUpdate(2, 10, 1, `/cwd ${context.defaultCwd}`))
-    await context.telegram.until(() => context.telegram.texts(10).filter(text => text.includes('已挂载')).length >= 2)
+    await context.telegram.until(() => context.telegram.texts(10).filter(text => text.includes('新建会话')).length >= 2)
     await new Promise(settle => setTimeout(settle, 80))
     assert.equal(context.telegram.of('pinChatMessage').length, 1)
   } finally {

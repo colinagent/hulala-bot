@@ -167,9 +167,11 @@ export class FakeHost {
       },
       session: {
         list: () => ok({ items: host.sessions.map(session => ({ ...session, blank: false, agentAvailable: true })) }),
-        create: () => {
+        create: (request?: { workspaceId?: unknown }) => {
           host.#created += 1
-          const session = { sessionId: `s${String(host.#created)}`, cwd: '/workspace/default', updatedAt: Date.now(), running: false }
+          const workspaceId = String(request?.workspaceId ?? '')
+          const cwd = workspaceId.startsWith('w:') ? workspaceId.slice(2) : '/workspace/default'
+          const session = { sessionId: `s${String(host.#created)}`, cwd, updatedAt: Date.now(), running: false }
           host.sessions.push(session)
           return ok({ sessionId: session.sessionId })
         },

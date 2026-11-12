@@ -368,7 +368,7 @@ The same commands on both channels:
 | Command | Behaviour |
 |---|---|
 | `/cwd` | List recently used directories; tap one to mount it |
-| `/cwd <path>` | Switch mount: newest session under that directory, create one if none |
+| `/cwd <path>` | Move to that directory with a new session (resume with `/sessions` + `/switch`) |
 | `/new` | Create a session in the current directory |
 | `/sessions` | Last 10 sessions, `*` marks the current one |
 | `/switch <n>` | Switch to the n-th |

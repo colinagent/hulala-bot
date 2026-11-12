@@ -364,7 +364,7 @@ grep -i "hulala-bot" ~/.hulala/logs/host.log | tail -20
 | 命令 | 行为 |
 |---|---|
 | `/cwd` | 列出最近用过的目录，点一个就挂上去 |
-| `/cwd <path>` | 换挂载：该目录下最近的会话，没有就新建 |
+| `/cwd <path>` | 换到该目录并新建会话（要恢复旧会话用 `/sessions` + `/switch`） |
 | `/new` | 在当前目录新建会话 |
 | `/sessions` | 最近 10 个会话，`*` 表示当前 |
 | `/switch <n>` | 切到第 n 个 |
