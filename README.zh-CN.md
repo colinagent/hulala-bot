@@ -4,7 +4,7 @@
 
 把这个机器上的 DeepSeek Harness agent 接到 **Telegram** 和 **飞书 / Lark** 上。手机发一句话，本机的 Host 执行，回复流式回到同一个对话；`/cwd` 切换这个对话挂载哪个会话——和 TUI 里切换会话是同一件事。
 
-DSH 原生和呼啦啦都用同一种方式接：**装成 Host 插件**，进 profile，随 Host 起落。npm 上显示的就是这个文件。
+DSH 原生和呼啦啦都用同一种方式接：**装成 Host 插件**，进 profile，随 Host 起落。
 
 ---
 
