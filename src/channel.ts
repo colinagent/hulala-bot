@@ -50,6 +50,13 @@ export interface SendOptions {
   readonly preview?: boolean
 }
 
+/** One inbound image, already downloaded and base64-encoded for the Host. */
+export interface InboundImage {
+  readonly mediaType: string
+  readonly data: string
+  readonly name?: string | undefined
+}
+
 /** One inbound message, already allowlisted. */
 export interface InboundMessage {
   readonly kind: 'message'
@@ -58,6 +65,15 @@ export interface InboundMessage {
   readonly text: string
   readonly fromBot: boolean
   readonly messageId: string
+  /** Attached images; the text may be empty when only images were sent. */
+  readonly images?: readonly InboundImage[] | undefined
+}
+
+/** One outbound image: a file the agent referenced and this channel should attach. */
+export interface OutgoingImage {
+  readonly data: Uint8Array
+  readonly mediaType: string
+  readonly caption?: string | undefined
 }
 
 /** One inbound button press, already allowlisted. */
@@ -97,6 +113,8 @@ export interface Channel {
   edit(chat: ChatKey, messageId: string, body: Outgoing, options?: SendOptions): Promise<void>
   /** Delete one message this bot sent; missing messages are not an error. */
   delete(chat: ChatKey, messageId: string): Promise<void>
+  /** Attach one image, when the surface can carry it. */
+  sendImage?(chat: ChatKey, image: OutgoingImage): Promise<void>
   /** Acknowledge a button press, optionally telling the presser why nothing happened. */
   answer(event: InboundCallback, text?: string): Promise<void>
   /** Pin a message, when the surface supports it. */

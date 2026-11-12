@@ -9,6 +9,7 @@
  *
  * @module hulala-bot/telegram/proxy
  */
+import { randomUUID } from 'node:crypto'
 import http from 'node:http'
 import https from 'node:https'
 import tls from 'node:tls'
@@ -152,6 +153,34 @@ class HttpsTunnelAgent extends https.Agent {
 }
 
 /**
+ * Serialize a `FormData` body for the tunnel.
+ *
+ * `fetch` would do this itself, but this transport writes the request with
+ * `http.request`, so the multipart encoding has to exist here for `sendPhoto`.
+ * @param form - multipart body.
+ * @returns the encoded bytes and the matching content type.
+ */
+async function encodeForm(form: FormData): Promise<{ body: Buffer; contentType: string }> {
+  const boundary = `----hulala${randomUUID().replace(/-/g, '')}`
+  const chunks: Buffer[] = []
+  for (const [name, value] of form.entries()) {
+    chunks.push(Buffer.from(`--${boundary}\r\n`))
+    if (typeof value === 'string') {
+      chunks.push(Buffer.from(`Content-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`))
+      continue
+    }
+    const filename = value.name === '' ? name : value.name
+    const type = value.type === '' ? 'application/octet-stream' : value.type
+    chunks.push(Buffer.from(`Content-Disposition: form-data; name="${name}"; filename="${filename}"\r\n`))
+    chunks.push(Buffer.from(`Content-Type: ${type}\r\n\r\n`))
+    chunks.push(Buffer.from(await value.arrayBuffer()))
+    chunks.push(Buffer.from('\r\n'))
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`))
+  return { body: Buffer.concat(chunks), contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
+/**
  * Build a `fetch` that reaches its target through `proxy`.
  * @param proxy - `http://` or `https://` proxy URL.
  * @returns a fetch-compatible function for one Bot API client.
@@ -166,7 +195,14 @@ export function createProxiedFetch(proxy: string): typeof globalThis.fetch {
     new Headers(init.headers).forEach((value, name) => {
       headers[name] = value
     })
-    const body = typeof init.body === 'string' ? init.body : undefined
+    let body: Buffer | string | undefined
+    if (typeof init.body === 'string') {
+      body = init.body
+    } else if (init.body instanceof FormData) {
+      const encoded = await encodeForm(init.body)
+      body = encoded.body
+      headers['content-type'] = encoded.contentType
+    }
     const status = await new Promise<{ code: number; text: string }>((resolve, reject) => {
       let settled = false
       const finish = (error: Error | null, result?: { code: number; text: string }): void => {

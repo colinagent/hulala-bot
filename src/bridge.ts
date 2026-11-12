@@ -13,14 +13,15 @@
  * @module hulala-bot/bridge
  */
 import { randomUUID } from 'node:crypto'
-import { stat } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { readFile, stat } from 'node:fs/promises'
+import { isAbsolute, resolve } from 'node:path'
 import type { SessionFollowFrame, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { Channel, ChatKey, InboundCallback, InboundEvent, InboundMessage } from './channel.ts'
 import { expandHome, type BridgeConfig } from './config.ts'
 import type { HostBackend } from './host/backend.ts'
 import { TurnTracker } from './host/turn.ts'
 import { Log } from './log.ts'
+import { mediaTypeOf, takeImageLinks, type ImageLink } from './render/images.ts'
 import { project, ReplyStream } from './reply.ts'
 import { COMMANDS, HELP, parseCommand } from './router.ts'
 import { keyOf, type Bindings } from './store/bindings.ts'
@@ -71,6 +72,9 @@ interface Pending {
   settled: boolean
   readonly resolve: (decision: Decision) => void
 }
+
+/** Largest file the bot attaches as an image. */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 /** Envelope every Remote call returns; only these fields matter here. */
 type RemoteResult<T> =
@@ -506,7 +510,17 @@ export class Bridge {
   async #prompt(message: InboundMessage): Promise<void> {
     const chat = message.chat
     const text = message.text.trim()
-    if (text === '') return
+    const images = message.images ?? []
+    const content = [
+      ...images.map(image => ({
+        type: 'image' as const,
+        mediaType: image.mediaType as never,
+        data: image.data,
+        ...(image.name === undefined ? {} : { name: image.name }),
+      })),
+      ...(text === '' ? [] : [{ type: 'text' as const, text }]),
+    ]
+    if (content.length === 0) return
     let sessionId = this.#bindings.get(chat)
     if (sessionId === undefined) {
       sessionId = await this.#default()
@@ -522,7 +536,7 @@ export class Bridge {
         requestId: randomUUID() as never,
         sessionId: sessionId as never,
         mode: 'queue',
-        content: [{ type: 'text', text }],
+        content,
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }))
     } catch (error) {
@@ -645,8 +659,41 @@ export class Bridge {
       const reply = mount.reply
       mount.reply = undefined
       mount.active = false
-      await reply?.finish(mount.tracker.text)
+      const { text, links } = takeImageLinks(mount.tracker.text)
+      await reply?.finish(text)
+      if (links.length > 0) await this.#sendImages(mount, links)
       void this.#syncStatus(mount.key)
+    }
+  }
+
+  /**
+   * Attach the images one reply referenced.
+   *
+   * A file the agent wrote is only reachable by a surface that accepts uploads;
+   * the path is resolved against the session directory, and anything unreadable
+   * or unrecognised is left out instead of failing the turn.
+   */
+  async #sendImages(mount: Mount, links: readonly ImageLink[]): Promise<void> {
+    const channel = this.#channel(mount.key)
+    if (channel.sendImage === undefined) return
+    for (const link of links.slice(0, 4)) {
+      const path = isAbsolute(link.path) ? link.path : resolve(mount.path ?? this.#config.defaultCwd, link.path)
+      const mediaType = mediaTypeOf(path)
+      if (mediaType === undefined) continue
+      const data = await readFile(path).catch(() => undefined)
+      if (data === undefined) {
+        this.#log.error(`image not readable: ${path}`)
+        continue
+      }
+      if (data.byteLength > MAX_IMAGE_BYTES) {
+        this.#log.error(`image too large: ${path}`)
+        continue
+      }
+      await channel.sendImage(mount.key, {
+        data: new Uint8Array(data),
+        mediaType,
+        ...(link.alt === '' ? {} : { caption: link.alt }),
+      }).catch(error => { this.#log.error(`image send failed: ${error instanceof Error ? error.message : String(error)}`) })
     }
   }
 

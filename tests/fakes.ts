@@ -30,8 +30,16 @@ export class FakeTelegram {
       const chunks: Buffer[] = []
       request.on('data', chunk => chunks.push(chunk as Buffer))
       request.on('end', () => {
-        const method = new URL(request.url ?? '/', 'http://localhost').pathname.split('/').pop() ?? ''
-        const body = chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
+        const pathname = new URL(request.url ?? '/', 'http://localhost').pathname
+        if (pathname.startsWith('/file/')) {
+          response.writeHead(200, { 'content-type': 'image/jpeg' })
+          response.end(Buffer.from([0xff, 0xd8, 0xff, 0xd9]))
+          return
+        }
+        const method = pathname.split('/').pop() ?? ''
+        const raw = Buffer.concat(chunks).toString()
+        const multipart = String(request.headers['content-type'] ?? '').startsWith('multipart/form-data')
+        const body = raw === '' ? {} : multipart ? { multipart: true, raw } : JSON.parse(raw) as Record<string, unknown>
         this.calls.push({ method, body })
         void this.#respond(method, body).then(result => {
           const document = result as { ok?: boolean }
@@ -54,6 +62,7 @@ export class FakeTelegram {
       this.#edits.set(key, body.text)
       return { message_id: body.message_id }
     }
+    if (method === 'getFile') return { file_path: 'photos/file.jpg', file_size: 4 }
     if (method !== 'getUpdates') return { message_id: this.calls.length }
     const update = this.#queue.shift()
     if (update !== undefined) return [update]
@@ -150,7 +159,7 @@ function ok<T>(value: T): { ok: true; value: T } {
 export class FakeHost {
   readonly calls: { method: string; args: unknown }[] = []
   readonly sessions: { sessionId: string; cwd: string; updatedAt: number; running: boolean; origin?: string }[] = []
-  readonly prompts: { sessionId: string; text: string }[] = []
+  readonly prompts: { sessionId: string; text: string; content?: readonly { type: string; text?: string }[] }[] = []
   readonly followRequests: unknown[] = []
   readonly #handlers = new Map<string, (request: unknown, next: () => Promise<unknown>) => Promise<unknown>>()
   readonly #streams = new Set<(frame: unknown) => void>()
@@ -175,8 +184,12 @@ export class FakeHost {
           host.sessions.push(session)
           return ok({ sessionId: session.sessionId })
         },
-        prompt: (request: { sessionId: string; content: { text: string }[] }) => {
-          host.prompts.push({ sessionId: request.sessionId, text: request.content[0]?.text ?? '' })
+        prompt: (request: { sessionId: string; content: { type: string; text?: string }[] }) => {
+          host.prompts.push({
+            sessionId: request.sessionId,
+            text: request.content.find(part => part.type === 'text')?.text ?? '',
+            content: request.content,
+          })
           return ok({ accepted: true })
         },
         cancel: () => ok({ cancelled: true }),
@@ -352,5 +365,22 @@ export class FakeSurface implements Channel {
   /** Deliver one event as this surface. */
   async emit(event: InboundEvent): Promise<void> {
     await this.#onEvent?.(event)
+  }
+}
+
+/** One inbound photo, with an optional caption. */
+export function photoUpdate(updateId: number, chatId: number, userId: number, caption?: string): Record<string, unknown> {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      chat: { id: chatId, type: 'private' },
+      from: { id: userId, is_bot: false },
+      ...(caption === undefined ? {} : { caption }),
+      photo: [
+        { file_id: 'small', file_size: 100, width: 90, height: 90 },
+        { file_id: 'large', file_size: 4000, width: 1280, height: 1280 },
+      ],
+    },
   }
 }

@@ -67,6 +67,17 @@ export interface TelegramChat {
   readonly title?: string
 }
 
+/** One image attached to a Telegram message, still on Telegram's servers. */
+export interface TelegramImage {
+  readonly fileId: string
+  readonly mediaType: string
+  readonly name?: string | undefined
+  readonly size: number
+}
+
+/** Largest image this bot downloads from Telegram. */
+export const TELEGRAM_IMAGE_LIMIT = 10 * 1024 * 1024
+
 /** One inbound message, flattened. */
 export interface TelegramMessage {
   readonly messageId: number
@@ -75,6 +86,8 @@ export interface TelegramMessage {
   readonly text: string
   readonly threadId: number | undefined
   readonly isBot: boolean
+  /** Photos and image documents; empty for a plain text message. */
+  readonly images: readonly TelegramImage[]
 }
 
 /** One button press. */
@@ -92,6 +105,16 @@ export interface TelegramCallback {
 export type InboundUpdate =
   | { readonly kind: 'message'; readonly updateId: number; readonly message: TelegramMessage }
   | { readonly kind: 'callback'; readonly updateId: number; readonly callback: TelegramCallback }
+  /** An update this bot has no use for; it still has to be confirmed by offset. */
+  | {
+    readonly kind: 'ignored'
+    readonly updateId: number
+    readonly reason: string
+    /** Present when the ignored update was a message, so the bot can answer. */
+    readonly chatId?: number
+    readonly threadId?: number
+    readonly fromId?: number
+  }
 
 /** Raw Bot API update envelope, narrowed to the fields read here. */
 interface RawUpdate {
@@ -101,8 +124,11 @@ interface RawUpdate {
     chat: TelegramChat
     from?: { id: number; is_bot?: boolean }
     text?: string
+    caption?: string
     message_thread_id?: number
     is_topic_message?: boolean
+    photo?: readonly { file_id: string; file_size?: number; width: number; height: number }[]
+    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number }
   }
   callback_query?: {
     id: string
@@ -257,7 +283,7 @@ export class TelegramApi {
    * @param offset - first update id to accept.
    * @param timeoutSeconds - server-side hold time.
    * @param signal - aborts the long poll so shutdown is immediate.
-   * @returns normalized updates.
+   * @returns normalized updates, including ignored ones so the offset advances.
    */
   async getUpdates(offset: number, timeoutSeconds: number, signal?: AbortSignal): Promise<readonly InboundUpdate[]> {
     const raw = await this.call<readonly RawUpdate[]>('getUpdates', {
@@ -268,18 +294,48 @@ export class TelegramApi {
     const updates: InboundUpdate[] = []
     for (const update of raw) {
       const message = update.message
-      if (message !== undefined && typeof message.text === 'string') {
+      if (message !== undefined) {
+        const images: TelegramImage[] = []
+        const photo = message.photo ?? []
+        if (photo.length > 0) {
+          // Telegram sends the same photo at several sizes; the largest is the
+          // one worth downloading and the only one the model should see.
+          const largest = [...photo].sort((left, right) => right.width * right.height - left.width * left.height)[0] as NonNullable<typeof photo>[number]
+          images.push({ fileId: largest.file_id, mediaType: 'image/jpeg', size: largest.file_size ?? 0 })
+        } else if (message.document?.mime_type?.startsWith('image/') === true) {
+          images.push({
+            fileId: message.document.file_id,
+            mediaType: message.document.mime_type,
+            size: message.document.file_size ?? 0,
+            ...(message.document.file_name === undefined ? {} : { name: message.document.file_name }),
+          })
+        }
+        const text = message.text ?? message.caption ?? ''
+        if (text !== '' || images.length > 0) {
+          updates.push({
+            kind: 'message',
+            updateId: update.update_id,
+            message: {
+              messageId: message.message_id,
+              chat: message.chat,
+              fromId: message.from?.id,
+              text,
+              threadId: message.is_topic_message === true ? message.message_thread_id : undefined,
+              isBot: message.from?.is_bot === true,
+              images,
+            },
+          })
+          continue
+        }
         updates.push({
-          kind: 'message',
+          kind: 'ignored',
           updateId: update.update_id,
-          message: {
-            messageId: message.message_id,
-            chat: message.chat,
-            fromId: message.from?.id,
-            text: message.text,
-            threadId: message.is_topic_message === true ? message.message_thread_id : undefined,
-            isBot: message.from?.is_bot === true,
-          },
+          reason: 'unsupported message type',
+          chatId: message.chat.id,
+          ...(message.is_topic_message === true && message.message_thread_id !== undefined
+            ? { threadId: message.message_thread_id }
+            : {}),
+          ...(message.from?.id === undefined ? {} : { fromId: message.from.id }),
         })
         continue
       }
@@ -297,8 +353,62 @@ export class TelegramApi {
             threadId: callback.message.is_topic_message === true ? callback.message.message_thread_id : undefined,
           },
         })
+        continue
       }
+      updates.push({ kind: 'ignored', updateId: update.update_id, reason: 'unhandled update' })
     }
     return updates
+  }
+
+  /**
+   * Download one file the Bot API is serving.
+   * @param fileId - `file_id` from a message.
+   * @returns the bytes.
+   */
+  async downloadFile(fileId: string): Promise<Uint8Array> {
+    const file = await this.call<{ file_path: string }>('getFile', { file_id: fileId })
+    const response = await this.#fetch(`${this.#baseUrl}/file/bot${this.#token}/${file.file_path}`, {
+      signal: AbortSignal.timeout(60_000),
+    })
+    if (!response.ok) throw new TelegramError('getFile', `download failed (${String(response.status)})`, response.status)
+    return new Uint8Array(await response.arrayBuffer())
+  }
+
+  /**
+   * Send one photo. Telegram takes the bytes as multipart, which is why the
+   * proxied transport knows how to encode a `FormData` body.
+   * @param chatId - destination chat.
+   * @param bytes - encoded image.
+   * @param mediaType - image MIME type.
+   * @param options - caption and thread.
+   * @returns the new message id.
+   */
+  async sendPhoto(
+    chatId: number,
+    bytes: Uint8Array,
+    mediaType: string,
+    options: { caption?: string; threadId?: number } = {},
+  ): Promise<number> {
+    const form = new FormData()
+    form.append('chat_id', String(chatId))
+    if (options.caption !== undefined && options.caption !== '') form.append('caption', options.caption.slice(0, 1024))
+    if (options.threadId !== undefined) form.append('message_thread_id', String(options.threadId))
+    const extension = mediaType === 'image/png' ? '.png' : mediaType === 'image/webp' ? '.webp' : mediaType === 'image/gif' ? '.gif' : '.jpg'
+    form.append('photo', new Blob([bytes], { type: mediaType }), `image${extension}`)
+    const response = await this.#fetch(`${this.#baseUrl}/bot${this.#token}/sendPhoto`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    })
+    const body = await response.json() as {
+      ok: boolean
+      result?: { message_id: number }
+      description?: string
+      parameters?: { retry_after?: number }
+    }
+    if (!body.ok) {
+      throw new TelegramError('sendPhoto', body.description ?? 'request failed', response.status, body.parameters?.retry_after)
+    }
+    return (body.result as { message_id: number }).message_id
   }
 }

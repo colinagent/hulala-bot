@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -20,6 +20,7 @@ import {
   FakeSurface,
   FakeTelegram,
   messageUpdate,
+  photoUpdate,
   type SurfaceMessage,
   textDelta,
   turnEnd,
@@ -412,6 +413,56 @@ test('two conversations get their own session instead of sharing one', async () 
     await context.telegram.until(() => context.host.prompts.length === 2)
     assert.notEqual(context.host.prompts[0]?.sessionId, context.host.prompts[1]?.sessionId)
     assert.equal(context.host.created, 2)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('a photo becomes a prompt image part, caption included', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(photoUpdate(1, 10, 1, '看看这张'))
+    await context.telegram.until(() => context.host.prompts.length === 1)
+    const content = context.host.prompts[0]?.content ?? []
+    assert.deepEqual(content.map(part => part.type), ['image', 'text'])
+    assert.equal(content[1]?.text, '看看这张')
+  } finally {
+    await context.stop()
+  }
+})
+
+test('an unsupported message is answered instead of ignored', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push({
+      update_id: 1,
+      message: { message_id: 1, chat: { id: 10, type: 'private' }, from: { id: 1, is_bot: false }, sticker: { file_id: 'x' } },
+    })
+    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('只支持文字和图片')))
+  } finally {
+    await context.stop()
+  }
+})
+
+test('an image the reply references is sent as a photo and stripped from the text', async () => {
+  const context = await harness()
+  const dir = await mkdtemp(join(tmpdir(), 'hulala-bot-image-'))
+  const file = join(dir, 'chart.png')
+  await writeFile(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '画个图'))
+    await context.telegram.until(() => context.host.followRequests.length === 1)
+    context.host.emit(turnStart())
+    context.host.emit(attemptStart('a1'))
+    const answer = `图在这里 ![chart](${file})`
+    context.host.emit(assistantMessage(answer))
+    context.host.emit(turnEnd())
+    await context.telegram.until(() => context.telegram.of('sendPhoto').length === 1)
+    const photo = context.telegram.of('sendPhoto')[0]
+    assert.equal(photo?.body.multipart, true)
+    assert.match(String(photo?.body.raw), /filename="image\.png"/)
+    assert.match(String(photo?.body.raw), /chart/)
+    await context.telegram.until(() => context.telegram.texts(10).includes('图在这里 chart'))
   } finally {
     await context.stop()
   }

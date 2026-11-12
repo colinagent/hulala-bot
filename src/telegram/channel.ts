@@ -15,13 +15,15 @@ import type {
   ChatKey,
   InboundCallback,
   InboundEvent,
+  InboundImage,
   Keyboard,
   Outgoing,
+  OutgoingImage,
   SendOptions,
 } from '../channel.ts'
 import type { TelegramChannelConfig } from '../config.ts'
 import { Log } from '../log.ts'
-import { TelegramApi, TelegramError, type InboundUpdate } from './api.ts'
+import { TELEGRAM_IMAGE_LIMIT, TelegramApi, TelegramError, type InboundUpdate, type TelegramMessage } from './api.ts'
 import { UpdateLedger } from '../store/ledger.ts'
 
 /** How Telegram ids are spelled on the wire versus in a binding key. */
@@ -217,7 +219,19 @@ export class TelegramChannel implements Channel {
           offset = update.updateId + 1
           if (this.#ledger.seen(update.updateId)) continue
           this.#log.info(`update ${String(update.updateId)} ${describe(update)}`)
-          const event = this.#eventOf(update)
+          if (update.kind === 'ignored') {
+            // The offset moves on, and the sender is told why nothing happened
+            // instead of waiting for an answer that will never come.
+            if (update.chatId !== undefined && this.#allowed(update.chatId, update.fromId)) {
+              await this.send(this.#key(update.chatId, update.threadId), {
+                raw: '只支持文字和图片消息。',
+                text: '只支持文字和图片消息。',
+                parts: ['只支持文字和图片消息。'],
+              }).catch(() => undefined)
+            }
+            continue
+          }
+          const event = await this.#eventOf(update)
           if (event === undefined) continue
           try {
             await onEvent(event)
@@ -245,7 +259,8 @@ export class TelegramChannel implements Channel {
   }
 
   /** Normalize one update, dropping anything the allowlist does not admit. */
-  #eventOf(update: InboundUpdate): InboundEvent | undefined {
+  async #eventOf(update: InboundUpdate): Promise<InboundEvent | undefined> {
+    if (update.kind === 'ignored') return undefined
     if (update.kind === 'callback') {
       const callback = update.callback
       if (!this.#allowed(callback.chatId, callback.fromId)) {
@@ -266,6 +281,7 @@ export class TelegramChannel implements Channel {
       this.#log.info(`ignored message chat=${String(message.chat.id)} from=${String(message.fromId ?? 0)} (not in allowlist)`)
       return undefined
     }
+    const images = await this.#images(message)
     return {
       kind: 'message',
       chat: this.#key(message.chat.id, message.threadId),
@@ -273,7 +289,43 @@ export class TelegramChannel implements Channel {
       text: message.text,
       fromBot: message.isBot,
       messageId: String(message.messageId),
+      ...(images.length === 0 ? {} : { images }),
     }
+  }
+
+  /** Download every image the Host will be asked to look at. */
+  async #images(message: TelegramMessage): Promise<InboundImage[]> {
+    const images: InboundImage[] = []
+    for (const image of message.images) {
+      if (image.size > TELEGRAM_IMAGE_LIMIT) {
+        this.#log.error(`image ${image.fileId} is too large (${String(image.size)} bytes)`)
+        continue
+      }
+      const bytes = await this.#api.downloadFile(image.fileId).catch(error => {
+        this.#log.error(`image download failed: ${error instanceof Error ? error.message : String(error)}`)
+        return undefined
+      })
+      if (bytes === undefined) continue
+      images.push({
+        mediaType: image.mediaType,
+        data: Buffer.from(bytes).toString('base64'),
+        ...(image.name === undefined ? {} : { name: image.name }),
+      })
+    }
+    return images
+  }
+
+  /** Attach one image the agent referenced. */
+  async sendImage(chat: ChatKey, image: OutgoingImage): Promise<void> {
+    await this.#api.sendPhoto(
+      numeric(chat.chatId, 'chat id'),
+      image.data,
+      image.mediaType,
+      {
+        ...(image.caption === undefined ? {} : { caption: image.caption }),
+        ...(chat.threadId === undefined ? {} : { threadId: numeric(chat.threadId, 'thread id') }),
+      },
+    )
   }
 }
 
@@ -291,6 +343,7 @@ function isMissing(error: unknown): boolean {
 
 /** Loggable summary of one update. */
 function describe(update: InboundUpdate): string {
+  if (update.kind === 'ignored') return `ignored (${update.reason})`
   if (update.kind === 'callback') {
     return `callback chat=${String(update.callback.chatId)} data=${update.callback.data}`
   }
