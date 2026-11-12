@@ -392,7 +392,6 @@ Approvals arrive as buttons (Telegram inline keyboard / Feishu card actions): "a
 | Pinned status | Yes (`📍 <directory>`) | No; use `/status` |
 | Typing indicator | Yes | Feishu has no such API |
 | Message limit | 4096 (split at 4000) | 4000 chars per card, then another card |
-| Tables and headings | Rendered as literal text | Tables become bullets with header labels, headings become bold (`lark_md` has neither) |
 | Groups | Any message | Must @-mention the bot |
 
 Both channels can run together: each mounts its own sessions, approvals appear on both, the first answer wins, and the other surface shows that it was handled elsewhere.
