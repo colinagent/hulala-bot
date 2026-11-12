@@ -373,7 +373,7 @@ grep -i "hulala-bot" ~/.hulala/logs/host.log | tail -20
 ## 开发
 
 ```bash
-node --test "tests/*.test.ts"                                  # 106 个用例
+node --test "tests/*.test.ts"                                  # 107 个用例
 bun run typecheck
 bun run build                                                  # dist/index.mjs + dist/plugin.mjs
 node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # 对真 Host 跑一轮

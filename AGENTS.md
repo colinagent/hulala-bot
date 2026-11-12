@@ -22,7 +22,7 @@
 ## 命令
 
 ```bash
-node --test "tests/*.test.ts"      # 106 个用例；假 Host + FakeTelegram + 假飞书平台/transport
+node --test "tests/*.test.ts"      # 107 个用例；假 Host + FakeTelegram + 假飞书平台/transport
 bun run typecheck
 bun run build                      # dist/index.mjs（--init）与 dist/plugin.mjs（Host 插件）
 node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>   # 对真 Host 跑一轮
