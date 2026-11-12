@@ -14,7 +14,7 @@ DSH 原生和呼啦啦都用同一种方式接：**装成 Host 插件**，进 pr
 
 ```text
 帮我配置 hulala-bot（一个把 Telegram / 飞书接到本机 DeepSeek Harness 的插件）。
-请先完整读 https://github.com/colinagent/hulala-bot/blob/main/README.zh-CN.md 的说明，然后按顺序执行：
+请先完整读 https://github.com/colinagent/hulala-bot/blob/main/docs/README.zh-CN.md 的说明，然后按顺序执行：
 
 1. 检查环境：node -v（>=22.6）、pnpm -v、hulala --version
 2. 按「安装」一节装插件（呼啦啦用 hulala install bot；没有这条命令就用 hulala plugin）
