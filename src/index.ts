@@ -34,7 +34,12 @@ if (arguments_.includes('--help') || arguments_.length === 0) {
 
 if (arguments_.includes('--init')) {
   // Setup is a one-shot: never fall through into something long-running.
-  process.exit(await runInit(arguments_.slice(arguments_.indexOf('--init') + 1)))
+  try {
+    process.exit(await runInit(arguments_.slice(arguments_.indexOf('--init') + 1)))
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  }
 }
 
 console.error(`unknown arguments: ${arguments_.join(' ')}\ntry --help`)

@@ -22,11 +22,10 @@
 ## 命令
 
 ```bash
-node src/index.ts --self-check     # 发现 Host、鉴权、挂载服务、发一条测试消息
-node src/index.ts                  # 前台跑
-node --test "tests/*.test.ts"      # 61 个用例，FakeHost + 真 HTTP 的 FakeTelegram
+node --test "tests/*.test.ts"      # 73 个用例，假 Host + 真 HTTP 的 FakeTelegram
 bun run typecheck
-bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs
+bun run build                      # dist/index.mjs（--init）与 dist/plugin.mjs（Host 插件）
+node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>   # 对真 Host 跑一轮
 ```
 
 需要 Node ≥ 22.6（本机 24.x）。`bun:test` 与 tsc 的类型定义冲突，测试用 `node --test`。
@@ -35,7 +34,8 @@ bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs
 
 | 路径 | 职责 |
 |---|---|
-| `src/host/attach.ts` | 发现 endpoint.json → `/connect` 换 cookie → 等连接就绪 |
+| `src/host/plugin.ts` | Host 插件入口：注入服务、起桥、随 Host 释放 |
+| `src/host/local-remote.ts` | 把宿主服务包成 `bridge.ts` 认识的那几个调用 |
 | `src/host/turn.ts` | 回合跟踪、工具调用的中文标签 |
 | `src/telegram/api.ts` | Bot API（429 `retry_after`、可中断的长轮询） |
 | `src/telegram/reply.ts` | 单条消息流式编辑、typing 续期、失败降级 |
@@ -44,14 +44,13 @@ bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs
 | `src/store/bindings.ts` | chat → session 挂载表 |
 | `src/bridge.ts` | 命令、挂载、流式、审批卡片、回调 |
 
-状态目录按形态取：插件形态是 `$DSH_HOME/config/dsh-telegram/`，peer 形态是 `~/.hulala/config/dsh-telegram/`；`config.json`、`bindings.json`、`receipts/`、`logs/` 都在里面，`0600`/`0700`。**轮询锁不在状态目录**：按 bot token 摘要放在 `~/.dsh-telegram/<hash>.lock`，这样 DSH 与呼啦啦两边都装了插件时也只有一个在轮询。bot token 只存系统钥匙串，不进配置文件、不进日志；配置用 `--init` 写，拒绝空允许名单。
+状态目录是 `$DSH_HOME/config/dsh-telegram/`（DSH 是 `~/.dsh`，呼啦啦是 `~/.hulala/harness`）；`config.json`、`bindings.json`、`receipts/`、`logs/` 都在里面，`0600`/`0700`。**轮询锁不在状态目录**：按 bot token 摘要放在 `~/.dsh-telegram/<hash>.lock`，这样 DSH 与呼啦啦两边都装了插件时也只有一个在轮询。bot token 只存系统钥匙串，不进配置文件、不进日志；配置用 `--init` 写，拒绝空允许名单。
 
-## 版本约束：两种形态两套机制
+## 版本约束
 
-- **插件**：`package.json` 的 `engines.dsh`（`>=0.2.2-rc.1 <0.3.0`）。装载器在 import 之前校验，不匹配就跳过并向 `skippedBundles` 报告；`@deepseek-ai/dsh-*` 必须是 **peerDependencies**，否则 profile 里会出现第二份，`Remote` 注册表就分裂了。
-- **peer**：`endpoint.json` 的 `protocol`（当前 `2`），不匹配时 `readEndpoint()` 直接抛错。
+`package.json` 的 `engines.dsh`（`>=0.2.2-rc.1 <0.3.0`）。装载器在 import 之前校验，不匹配就跳过并向 `skippedBundles` 报告；`@deepseek-ai/dsh-*` 必须是 **peerDependencies**，否则 profile 里会出现第二份，`Remote` 注册表就分裂了。
 
-改 DSH 依赖版本时两处都要动，且插件那条要跟着上游 minor 走。
+改 DSH 依赖版本时跟着上游 minor 走，并在真机上重跑 `scripts/spike-host.ts`。
 
 ## 三个不显然的坑
 
@@ -61,18 +60,23 @@ bun build src/index.ts --target=node --format=esm --outfile=dist/index.mjs
 
 ## 兼容性现状
 
-**协议层兼容上游 DSH，只有「发现」绑在 Hulala 上。**
+**只依赖 DSH 的宿主服务面**：`sessionController` 的 `list/create/prompt/follow`、
+`workspaceController.create`、`approval/request` 的 waterfall 语义。不再有载体、端口、
+token、cookie 或独立进程——那些随 peer 形态一起删掉了。
 
-已经核实（`deepseek-harness` 2026-11-11 master，0.2.2-rc.2）：
+版本由 `package.json` 的 `engines.dsh`（`>=0.2.2-rc.1 <0.3.0`）声明，装载器在 import
+之前校验；`@deepseek-ai/dsh-*` 必须是 **peerDependencies**，否则 profile 里会出现第二份
+注册表。
 
-- `/connect`、`?token=…&interactions=answer`、`Set-Cookie`、`/api/remote.mux` 全部是上游 `@deepseek-ai/dsh-client-connection` 的实现（`connect-protocol.ts` 的 `CONNECT_PATH`、`browser-auth.ts` 的 `TOKEN_QUERY`/`COOKIE_PREFIX`、`api/gateway` 的 `REMOTE_STREAM_MUX_PATH`）。
-- `$mount(SessionRemote)` / `$mount(WorkspaceRemote)` 直接 import 自 `@deepseek-ai/dsh-api-*-controller/remote`，版本对齐即协议对齐。
-- 桌面端不是 IPC-only：`apps/desktop-host` 用 `--host 127.0.0.1 --port 0` 起同一个 Web 应用，再把 URL 经 IPC 交给 Electron。网页端把带 token 的 URL 打到 stdout（`packages/bundle/web-app`）。
+呼啦啦与 DSH 都用同一条 `plugin` 入口安装：
 
-缺的只有发现：上游没有 `endpoint.json`，桌面把 URL 只交给 Electron，网页只打印。`src/host/attach.ts` 里的 `endpointPath()` 因此写死了 `~/.hulala/server/host/endpoint.json`。cookie 名不写死——用的是响应里的 `Set-Cookie`，所以 Hulala 的 `hulala_<uuid>` 和上游的 `dsh-auth-` 都能用。
+```sh
+dsh plugin --profile tui add @colinagent/dsh-telegram
+hulala plugin --profile tui add @colinagent/dsh-telegram
+```
 
 ## 约定
 
-- 单实例：`bridge.lock` 里放 pid。两个轮询器抢同一个 bot token 会让 Telegram 回 409 并随机丢 update，和「消息丢了」不可区分。
+- 单实例：锁按 bot token 的摘要放在 `~/.dsh-telegram/<hash>.lock`，跨 home 生效。两个轮询器抢同一个 token 会让 Telegram 回 409 并随机丢 update，和「消息丢了」不可区分。
 - 提交前跑 `node --test`；`dist/` 不进版本库。
 - 许可 GPL-3.0-only。私有仓不复制这里的源码。
