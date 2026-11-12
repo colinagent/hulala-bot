@@ -50,10 +50,16 @@ export interface SendOptions {
   readonly preview?: boolean
 }
 
-/** One inbound image, already downloaded and base64-encoded for the Host. */
+/**
+ * One inbound image, already saved to this machine.
+ *
+ * The path is what the model gets: the Host only accepts image parts from a
+ * vision model, and a path works with every model — the agent reads the file
+ * with `read_image` or any tool it likes, exactly as a pasted path does in a
+ * terminal client.
+ */
 export interface InboundImage {
-  readonly mediaType: string
-  readonly data: string
+  readonly path: string
   readonly name?: string | undefined
 }
 

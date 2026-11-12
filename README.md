@@ -376,7 +376,7 @@ The same commands on both channels:
 | `/stop` | Cancel the running turn |
 | `/help` | All of the above |
 
-**Images.** A photo sent to the bot (with or without a caption) becomes an image prompt part, up to 10 MB. A reply that references a file as `![caption](<path>)` — what the deliverable prompt tells the agent to do for pictures — is sent as a real photo on Telegram (at most four per reply, 10 MB each), and the link is replaced by its caption text so no broken path remains. Feishu has no image path yet; there the link stays as text.
+**Images.** A photo sent to the bot (with or without a caption) is downloaded and saved under `$DSH_HOME/config/hulala-bot/inbox/`; the prompt gets `[图片: <path>]` appended and the agent reads that file with `read_image` or any tool — the same "here is a path" model as attaching an image in a terminal client. Image prompt parts are deliberately not used: the Host accepts them only for a vision model, and the bot cannot know which model a session runs. Incoming files are capped at 10 MB. A reply that references a file as `![caption](<path>)` is sent as a real photo on Telegram (up to four, 10 MB each), with the link replaced by its caption. Feishu images are not implemented.
 
 Plain text is a prompt. The first message creates a session under `defaultCwd` and mounts it — **one session per conversation**, so a private chat never echoes into a group. Sharing is explicit: `/cwd <path>` mounts the newest session under that directory, and `/switch` picks one from the list.
 

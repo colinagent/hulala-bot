@@ -58,6 +58,7 @@ async function harness(options: {
     ledger: await UpdateLedger.open(join(dir, 'r.json')),
     log: new Log(dir, []),
     commands: [],
+    inboxDir: join(dir, 'inbox'),
   })
   const chat: ChatKey = {
     channel: 'telegram',

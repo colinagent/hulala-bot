@@ -58,6 +58,7 @@ async function harness(overrides: Partial<BridgeConfig> = {}, surface?: FakeSurf
     ledger: await UpdateLedger.open(join(stateDir, 'receipts.json')),
     log,
     commands: COMMANDS,
+    inboxDir: join(stateDir, 'inbox'),
   })
   const bridge = new Bridge({
     config,
@@ -423,9 +424,9 @@ test('a photo becomes a prompt image part, caption included', async () => {
   try {
     context.telegram.push(photoUpdate(1, 10, 1, '看看这张'))
     await context.telegram.until(() => context.host.prompts.length === 1)
-    const content = context.host.prompts[0]?.content ?? []
-    assert.deepEqual(content.map(part => part.type), ['image', 'text'])
-    assert.equal(content[1]?.text, '看看这张')
+    const prompt = context.host.prompts[0]
+    assert.match(prompt?.text ?? '', /看看这张/)
+    assert.match(prompt?.text ?? '', /\[图片: .*inbox.*\.jpg\]/)
   } finally {
     await context.stop()
   }

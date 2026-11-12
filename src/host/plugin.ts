@@ -92,6 +92,7 @@ async function start(ctx: Context, stateDir: string): Promise<() => Promise<void
         ledger: await UpdateLedger.open(join(config.stateDir, 'receipts', 'telegram.json')),
         log,
         commands: COMMANDS,
+        inboxDir: join(config.stateDir, 'inbox'),
       }))
     } catch (error) {
       log.error(`telegram not started: ${error instanceof Error ? error.message : String(error)}`)

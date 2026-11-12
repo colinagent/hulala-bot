@@ -8,6 +8,8 @@
  *
  * @module hulala-bot/telegram/channel
  */
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { splitMessage } from '../render/split.ts'
 import { toMarkdownV2 } from '../render/markdown.ts'
 import type {
@@ -46,6 +48,8 @@ export interface TelegramChannelOptions {
   readonly ledger: UpdateLedger
   readonly log: Log
   readonly commands: readonly CommandEntry[]
+  /** Where inbound images are saved before their paths go to the agent. */
+  readonly inboxDir: string
 }
 
 /** Telegram, speaking the bridge's channel contract. */
@@ -58,6 +62,7 @@ export class TelegramChannel implements Channel {
   readonly #ledger: UpdateLedger
   readonly #log: Log
   readonly #commands: readonly CommandEntry[]
+  readonly #inboxDir: string
   /** Formatting degrades to plain text on the first rejected projection. */
   #plain: boolean
 
@@ -68,6 +73,7 @@ export class TelegramChannel implements Channel {
     this.#ledger = options.ledger
     this.#log = options.log
     this.#commands = options.commands
+    this.#inboxDir = options.inboxDir
     this.#plain = options.config.parseMode === 'plain'
   }
 
@@ -293,10 +299,10 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  /** Download every image the Host will be asked to look at. */
+  /** Download every image to this machine so the agent gets a path. */
   async #images(message: TelegramMessage): Promise<InboundImage[]> {
     const images: InboundImage[] = []
-    for (const image of message.images) {
+    for (const [index, image] of message.images.entries()) {
       if (image.size > TELEGRAM_IMAGE_LIMIT) {
         this.#log.error(`image ${image.fileId} is too large (${String(image.size)} bytes)`)
         continue
@@ -306,11 +312,19 @@ export class TelegramChannel implements Channel {
         return undefined
       })
       if (bytes === undefined) continue
-      images.push({
-        mediaType: image.mediaType,
-        data: Buffer.from(bytes).toString('base64'),
-        ...(image.name === undefined ? {} : { name: image.name }),
-      })
+      const extension = image.mediaType === 'image/png' ? 'png'
+        : image.mediaType === 'image/webp' ? 'webp'
+          : image.mediaType === 'image/gif' ? 'gif' : 'jpg'
+      const name = `${String(message.messageId)}-${String(index)}.${extension}`
+      const path = join(this.#inboxDir, name)
+      try {
+        await mkdir(this.#inboxDir, { recursive: true, mode: 0o700 })
+        await writeFile(path, bytes, { mode: 0o600 })
+      } catch (error) {
+        this.#log.error(`image save failed: ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
+      images.push({ path, ...(image.name === undefined ? {} : { name: image.name }) })
     }
     return images
   }

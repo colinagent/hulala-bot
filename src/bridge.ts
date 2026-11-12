@@ -510,17 +510,13 @@ export class Bridge {
   async #prompt(message: InboundMessage): Promise<void> {
     const chat = message.chat
     const text = message.text.trim()
-    const images = message.images ?? []
-    const content = [
-      ...images.map(image => ({
-        type: 'image' as const,
-        mediaType: image.mediaType as never,
-        data: image.data,
-        ...(image.name === undefined ? {} : { name: image.name }),
-      })),
-      ...(text === '' ? [] : [{ type: 'text' as const, text }]),
-    ]
-    if (content.length === 0) return
+    // Images arrive as files; the model is told the path and reads it with
+    // `read_image`. Image prompt parts would need a vision model, and this bot
+    // cannot know which model a session uses.
+    const withImages = [text, ...(message.images ?? []).map(image => `[图片: ${image.path}]`)]
+      .filter(line => line !== '')
+      .join('\n\n')
+    if (withImages === '') return
     let sessionId = this.#bindings.get(chat)
     if (sessionId === undefined) {
       sessionId = await this.#default()
@@ -536,7 +532,7 @@ export class Bridge {
         requestId: randomUUID() as never,
         sessionId: sessionId as never,
         mode: 'queue',
-        content,
+        content: [{ type: 'text', text: withImages }],
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }))
     } catch (error) {
