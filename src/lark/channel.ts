@@ -22,6 +22,7 @@ import { Log } from '../log.ts'
 import { UpdateLedger } from '../store/ledger.ts'
 import { LarkApi, LarkError } from './api.ts'
 import { buildCard, stripMentions } from './card.ts'
+import { formatMarkdown } from './format.ts'
 import type { LarkActionEvent, LarkMessageEvent, LarkTransport } from './ws.ts'
 
 /** What the Lark channel needs from outside. */
@@ -55,9 +56,9 @@ export class LarkChannel implements Channel {
     this.#log = options.log
   }
 
-  /** @param text - agent Markdown; cards understand it as `lark_md`. */
+  /** @param text - agent Markdown, reduced to what `lark_md` renders. */
   format(text: string): string {
-    return text
+    return formatMarkdown(text)
   }
 
   /** Allowlist: either list may admit; both empty refuses everything. */
