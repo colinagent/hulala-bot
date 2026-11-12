@@ -248,7 +248,7 @@ async function larkConfig(raw: LarkFile | undefined, env: NodeJS.ProcessEnv, fil
   if (!/^cli_[0-9a-fA-F]{16}$/.test(appId)) {
     throw new Error(`lark.appId must look like cli_<16 hex>, not ${JSON.stringify(appId)} (from ${file})`)
   }
-  const appSecret = await resolveSecret(raw as Record<string, unknown>, env, 'appSecret')
+  const appSecret = await resolveSecret(raw as Record<string, unknown>, env, 'appSecret') ?? env.LARK_APP_SECRET
   if (appSecret === undefined || appSecret.trim() === '') {
     throw new Error(`no Lark app secret: set lark.appSecretRef in ${file}, or LARK_APP_SECRET in the environment`)
   }

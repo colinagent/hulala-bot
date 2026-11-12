@@ -77,3 +77,9 @@ test('a missing file is reported as "no channel configured"', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hulala-bot-empty-'))
   await assert.rejects(loadConfig({}, root), /no channel configured/)
 })
+
+test('LARK_APP_SECRET is the environment fallback for the app secret', async () => {
+  const root = await state({ lark: { appId: 'cli_0123456789abcdef', allowedUsers: ['ou_1'] } })
+  const config = await loadConfig({ LARK_APP_SECRET: 'from-env' }, root)
+  assert.equal(config.lark?.appSecret, 'from-env')
+})
