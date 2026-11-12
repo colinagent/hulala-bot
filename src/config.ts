@@ -12,6 +12,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { normalizeProxy } from './telegram/proxy.ts'
 
 const run = promisify(execFile)
 
@@ -38,6 +39,8 @@ export interface BridgeConfig {
   readonly stateDir: string
   /** How long long-polling waits for an update, in seconds. */
   readonly pollTimeoutSeconds: number
+  /** HTTP/HTTPS proxy for api.telegram.org, when the network needs one. */
+  readonly proxy: string | undefined
 }
 
 /** On-disk shape; every field optional except the token reference. */
@@ -52,6 +55,7 @@ interface BridgeConfigFile {
   readonly streamIntervalMs?: number
   readonly parseMode?: 'markdown' | 'plain'
   readonly pollTimeoutSeconds?: number
+  readonly proxy?: string
 }
 
 /** Resolve the Hulala state root the same way the Host does. */
@@ -171,6 +175,7 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env, root?: st
   }
   const streamIntervalMs = Number.isFinite(raw.streamIntervalMs) ? (raw.streamIntervalMs as number) : 800
   const pollSeconds = Number.isFinite(raw.pollTimeoutSeconds) ? (raw.pollTimeoutSeconds as number) : 25
+  const proxy = raw.proxy === undefined ? undefined : normalizeProxy(raw.proxy)
 
   return {
     baseUrl: (raw.baseUrl ?? TELEGRAM_API).replace(/\/$/, ''),
@@ -182,5 +187,6 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env, root?: st
     parseMode,
     stateDir,
     pollTimeoutSeconds: Math.max(1, Math.min(50, pollSeconds)),
+    proxy,
   }
 }

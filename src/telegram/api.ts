@@ -7,6 +7,7 @@
  *
  * @module dsh-telegram/telegram/api
  */
+import { createProxiedFetch } from './proxy.ts'
 
 /** One inline keyboard button. */
 export interface InlineButton {
@@ -51,10 +52,11 @@ export class TelegramError extends Error {
   }
 }
 
-/** Transport options; tests inject a base URL and fetch. */
+/** Transport options; tests inject a base URL and fetch, users may set a proxy. */
 export interface TelegramOptions {
   readonly token: string
   readonly baseUrl: string
+  readonly proxy?: string | undefined
   readonly fetch?: typeof globalThis.fetch
 }
 
@@ -130,7 +132,8 @@ export class TelegramApi {
   constructor(options: TelegramOptions) {
     this.#token = options.token
     this.#baseUrl = options.baseUrl
-    this.#fetch = options.fetch ?? globalThis.fetch
+    this.#fetch = options.fetch
+      ?? (options.proxy === undefined ? globalThis.fetch : createProxiedFetch(options.proxy))
   }
 
   /**

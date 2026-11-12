@@ -38,6 +38,7 @@ async function harness(overrides: Partial<BridgeConfig> = {}) {
     parseMode: 'plain',
     stateDir,
     pollTimeoutSeconds: 1,
+    proxy: undefined,
     ...overrides,
   }
   const host = new FakeHost()

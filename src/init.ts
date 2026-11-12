@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
 import { bridgeStateDir } from './config.ts'
+import { normalizeProxy } from './telegram/proxy.ts'
 
 /** What `--init` decided to write. */
 export interface InitOptions {
@@ -22,6 +23,7 @@ export interface InitOptions {
   readonly defaultCwd: string
   readonly baseUrl?: string
   readonly parseMode?: 'markdown' | 'plain'
+  readonly proxy?: string
 }
 
 interface Parsed {
@@ -35,7 +37,7 @@ interface Parsed {
  * @returns what was supplied and whether prompting is allowed.
  */
 function parse(argv: readonly string[]): Parsed {
-  const options: { tokenRef?: string; allowedUsers?: number[]; defaultCwd?: string; baseUrl?: string; parseMode?: 'markdown' | 'plain' } = {}
+  const options: { tokenRef?: string; allowedUsers?: number[]; defaultCwd?: string; baseUrl?: string; parseMode?: 'markdown' | 'plain'; proxy?: string } = {}
   let interactive = stdin.isTTY
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index] as string
@@ -54,6 +56,7 @@ function parse(argv: readonly string[]): Parsed {
       }
     } else if (argument === '--default-cwd') options.defaultCwd = value()
     else if (argument === '--base-url') options.baseUrl = value()
+    else if (argument === '--proxy') options.proxy = normalizeProxy(value())
     else if (argument === '--parse-mode') {
       const mode = value()
       if (mode !== 'markdown' && mode !== 'plain') throw new Error('--parse-mode is markdown or plain')
@@ -108,6 +111,7 @@ export async function runInit(argv: readonly string[], env: NodeJS.ProcessEnv = 
     defaultCwd: options.defaultCwd ?? '~',
     ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
     ...(options.parseMode === undefined ? {} : { parseMode: options.parseMode }),
+    ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
   }
   await writeFile(file, JSON.stringify(document, null, 2) + '\n', { mode: 0o600 })
   console.log(`wrote ${file}`)

@@ -44,7 +44,7 @@ node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>   # 对真 Host 跑一
 | `src/store/bindings.ts` | chat → session 挂载表 |
 | `src/bridge.ts` | 命令、挂载、流式、审批卡片、回调 |
 
-状态目录是 `$DSH_HOME/config/dsh-telegram/`（DSH 是 `~/.dsh`，呼啦啦是 `~/.hulala/harness`）；`config.json`、`bindings.json`、`receipts/`、`logs/` 都在里面，`0600`/`0700`。**轮询锁不在状态目录**：按 bot token 摘要放在 `~/.dsh-telegram/<hash>.lock`，这样 DSH 与呼啦啦两边都装了插件时也只有一个在轮询。bot token 只存系统钥匙串，不进配置文件、不进日志；配置用 `--init` 写，拒绝空允许名单。
+状态目录是 `$DSH_HOME/config/dsh-telegram/`（DSH 是 `~/.dsh`，呼啦啦是 `~/.hulala/harness`）；`config.json`、`bindings.json`、`receipts/`、`logs/` 都在里面，`0600`/`0700`。**轮询锁不在状态目录**：按 bot token 摘要放在 `~/.dsh-telegram/<hash>.lock`，这样 DSH 与呼啦啦两边都装了插件时也只有一个在轮询。bot token 只存系统钥匙串，不进配置文件、不进日志；配置用 `--init` 写，拒绝空允许名单。`config.json` 的 `proxy` 是 HTTP/HTTPS CONNECT 代理（`http://127.0.0.1:7897` 这种），单列一项而不是读环境变量：Host 的环境属于用户，插件不该偷偷改 `HTTPS_PROXY`。
 
 ## 版本约束
 

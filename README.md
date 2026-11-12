@@ -43,6 +43,13 @@ dsh plugin --profile tui exec dsh-telegram --init \
   --token-ref telegram/bot-token --allowed-user 123456789 --default-cwd ~/work
 ```
 
+网络到不了 `api.telegram.org`（国内直连基本不行）时，加上代理：
+
+```sh
+dsh plugin --profile tui exec dsh-telegram --init \
+  --token-ref telegram/bot-token --allowed-user 123456789 --proxy http://127.0.0.1:7897
+```
+
 装完核对：
 
 ```sh
@@ -116,7 +123,8 @@ secret-tool store --label 'telegram bot' service telegram account bot-token
   "allowedUsers": [123456789],
   "defaultCwd": "~/hulala-workspace/workspace",
   "streamIntervalMs": 800,
-  "parseMode": "markdown"
+  "parseMode": "markdown",
+  "proxy": "http://127.0.0.1:7897"
 }
 ```
 
@@ -128,9 +136,14 @@ secret-tool store --label 'telegram bot' service telegram account bot-token
 | `defaultCwd` | 第一次说话时在哪个目录建会话 |
 | `streamIntervalMs` | 同一条消息两次编辑的最小间隔，默认 800ms |
 | `parseMode` | `markdown`（代码块正常显示，失败自动退回纯文本）或 `plain` |
+| `proxy` | HTTP/HTTPS 代理，形如 `http://127.0.0.1:7897`；支持 `用户:密码@` 认证。不走系统环境变量，只认这一项 |
 | `baseUrl` | 只给测试用：把 Bot API 指向假服务器 |
 
 状态文件同目录：`bindings.json`（挂载表）、`receipts/`（入站去重账本，24h TTL）、`logs/`。全部 `0600`，token 不进日志。
+
+`proxy` 只接受 `http://` 或 `https://`（Clash、Surge、V2RayN 的 HTTP 端口都是这个形状）；
+SOCKS5 不支持。代理只在 Node/Bun 这一侧生效：请求走 CONNECT 隧道，配置写错会在启动时
+直接报错，而不是悄悄直连。
 
 ## 运行
 
