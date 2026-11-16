@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { Context } from '@deepseek-ai/cordis'
 import { createLocalRemote } from '../src/host/local-remote.ts'
 
 /** Minimal Host context: only the two controllers the facade delegates to. */
@@ -8,6 +9,7 @@ function fakeHost(options: {
   onFollow?: (request: unknown, signal?: AbortSignal) => AsyncIterable<unknown>
 } = {}) {
   const seen: string[] = []
+  const services = new Map<string, unknown>()
   const ctx = {
     sessionController: {
       list: async (request: unknown) => {
@@ -23,13 +25,14 @@ function fakeHost(options: {
     workspaceController: {
       create: async (request: unknown) => ({ workspace: { workspaceId: 'w1' }, request }),
     },
+    get: (name: string) => services.get(name),
     on: (name: string, handler: unknown) => {
       seen.push(`on:${name}`)
       assert.equal(typeof handler, 'function')
       return () => seen.push(`off:${name}`)
     },
   }
-  return { ctx: ctx as never, seen, raw: ctx }
+  return { ctx: ctx as never, seen, services, raw: ctx }
 }
 
 test('list wraps the Host value in the envelope the bridge unwraps', async () => {
@@ -75,14 +78,13 @@ test('follow stays a bare async iterable because the bridge iterates it directly
 test('commands.execute resolves the live Agent and delegates the line', async () => {
   const host = fakeHost()
   const seen: unknown[] = []
-  const services = host.raw as unknown as Record<string, unknown>
-  services.agents = { get: (sessionId: string) => ({ id: `agent-${sessionId}` }) }
-  services.commands = {
+  host.services.set('agents', { get: (sessionId: string) => ({ id: `agent-${sessionId}` }) })
+  host.services.set('commands', {
     execute: (agent: unknown, line: string, attachments: readonly unknown[], signal: AbortSignal) => {
       seen.push({ agent, line, attachments, aborted: signal.aborted })
       return { commandId: 'c1' }
     },
-  }
+  })
   const result = await createLocalRemote(host.ctx).commands.execute('a', '/permission danger-full-access')
   assert.equal(result.ok, true)
   assert.deepEqual(seen, [{
@@ -106,4 +108,36 @@ test('$on subscribes on the Host context and returns its disposer', () => {
   const off = remote.$on('approval/request', async () => 'allowed-once')
   off()
   assert.deepEqual(host.seen, ['on:approval/request', 'off:approval/request'])
+})
+
+test('optional services are read through ctx.get, which needs no inject declaration', async () => {
+  const ctx = new Context()
+  const provide = (name: string, value: unknown): void => {
+    (ctx as unknown as { provide(name: string, value: unknown): void }).provide(name, value)
+  }
+  provide('schedule', {
+    catalog: async () => [{
+      id: 's1',
+      title: 'T',
+      kind: 'daily',
+      status: 'active',
+      time: '06:00:00.000',
+      timeZone: 'Asia/Shanghai',
+      scheduledAt: '2026-11-16T22:00:00.000Z',
+    }],
+  })
+  provide('agents', { get: () => ({ id: 'agent-a' }) })
+  provide('commands', { execute: () => ({ commandId: 'c1' }) })
+
+  const remote = createLocalRemote(ctx)
+  const listed = await remote.schedule.catalog()
+  assert.equal(listed.ok, true)
+  const ran = await remote.commands.execute('a', '/tasks')
+  assert.equal(ran.ok, true)
+})
+
+test('a Host without the schedule service reports it instead of throwing', async () => {
+  const result = await createLocalRemote(fakeHost().ctx).schedule.catalog()
+  assert.equal(result.ok, false)
+  assert.equal(result.ok === false && result.error.message, 'this Host composes no schedule service')
 })

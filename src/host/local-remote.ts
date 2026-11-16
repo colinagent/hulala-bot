@@ -55,7 +55,7 @@ async function envelope<T>(run: () => T | Promise<T>): Promise<RemoteResult<T>> 
   }
 }
 
-/** Host services this facade needs. */
+/** Host services this facade reaches by injected property access. */
 interface HostServices {
   sessionController: {
     list(request: never, signal: AbortSignal): Promise<{ items: readonly unknown[] }>
@@ -67,17 +67,16 @@ interface HostServices {
   workspaceController: {
     create(request: never): Promise<{ workspace: { workspaceId: unknown } }>
   }
-  /** The live-Agent registry the command service dispatches through. */
-  agents?: {
-    get(sessionId: string): unknown
-  }
-  commands?: {
-    execute(agent: unknown, line: string, attachments: readonly unknown[], signal: AbortSignal): unknown
-  }
-  /** Host-owned scheduled tasks; the terminal renders the same list. */
-  schedule?: {
-    catalog(): Promise<readonly ScheduleTask[]>
-  }
+}
+
+/** One service read the plugin did not declare in its `inject` list. */
+interface OptionalService {
+  readonly get: (name: string) => unknown
+}
+
+/** Resolve a service explicitly: `ctx.get()` needs no inject declaration. */
+function service<T>(ctx: Context, name: string): T | undefined {
+  return (ctx as unknown as OptionalService).get(name) as T | undefined
 }
 
 /**
@@ -103,16 +102,21 @@ export function createLocalRemote(ctx: Context): LocalRemote {
     },
     commands: {
       execute: (sessionId, line) => envelope(() => {
-        const agent = services.agents?.get(sessionId)
+        const agents = service<{ get(sessionId: string): unknown }>(ctx, 'agents')
+        const commands = service<{
+          execute(agent: unknown, line: string, attachments: readonly unknown[], signal: AbortSignal): unknown
+        }>(ctx, 'commands')
+        const agent = agents?.get(sessionId)
         if (agent === undefined) throw new Error(`session ${sessionId} has no live agent`)
-        if (services.commands === undefined) throw new Error('this Host composes no command registry')
-        return services.commands.execute(agent, line, [], lifetime.signal)
+        if (commands === undefined) throw new Error('this Host composes no command registry')
+        return commands.execute(agent, line, [], lifetime.signal)
       }),
     },
     schedule: {
       catalog: () => envelope(() => {
-        if (services.schedule === undefined) throw new Error('this Host composes no schedule service')
-        return services.schedule.catalog()
+        const schedule = service<{ catalog(): Promise<readonly ScheduleTask[]> }>(ctx, 'schedule')
+        if (schedule === undefined) throw new Error('this Host composes no schedule service')
+        return schedule.catalog()
       }),
     },
     $on: (name, handler) => ctx.on(name as never, handler as never) as unknown as () => void,
