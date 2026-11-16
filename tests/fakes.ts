@@ -161,6 +161,8 @@ export class FakeHost {
   readonly sessions: { sessionId: string; cwd: string; updatedAt: number; running: boolean; origin?: string }[] = []
   readonly prompts: { sessionId: string; text: string; content?: readonly { type: string; text?: string }[] }[] = []
   readonly followRequests: unknown[] = []
+  /** Command lines the bridge ran through `ctx.remote.commands`. */
+  readonly commands: { sessionId: string; line: string }[] = []
   readonly #handlers = new Map<string, (request: unknown, next: () => Promise<unknown>) => Promise<unknown>>()
   readonly #streams = new Set<(frame: unknown) => void>()
   #created = 0
@@ -224,6 +226,12 @@ export class FakeHost {
         create: (request: { path: string }) => {
           host.calls.push({ method: 'workspace.create', args: request })
           return ok({ workspace: { workspaceId: `w:${request.path}` } })
+        },
+      },
+      commands: {
+        execute: (sessionId: string, line: string) => {
+          host.commands.push({ sessionId, line })
+          return ok({ commandId: 'c1' })
         },
       },
     }

@@ -151,6 +151,32 @@ test('renders an approval as buttons and settles it on press', async () => {
   }
 })
 
+test('full access answers once and switches the Session through the Host command', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '改一下那个仓库'))
+    await context.telegram.until(() => context.host.followRequests.length === 1)
+    context.host.emit(turnStart())
+    await new Promise(settle => setTimeout(settle, 60))
+    const outcome = context.host.invoke('approval/request', {
+      toolName: 'bash',
+      reason: 'escalate sandbox to workspace-write: the repo is outside the workspace',
+      agent: { session: { id: 's1' } },
+    })
+    await context.telegram.until(() => context.telegram.of('sendMessage').some(call => call.body.reply_markup !== undefined))
+    const card = context.telegram.of('sendMessage').find(call => call.body.reply_markup !== undefined)
+    const keyboard = (card?.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard
+    const data = keyboard[0]?.find(button => button.callback_data.startsWith('full:'))?.callback_data ?? ''
+    assert.match(data, /^full:a\d+$/)
+    context.telegram.push(callbackUpdate(2, 10, 1, Number(card?.body.chat_id ?? 0), data))
+    assert.equal(await outcome, 'allowed-once')
+    assert.deepEqual(context.host.commands, [{ sessionId: 's1', line: '/permission danger-full-access' }])
+    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('已改为完全权限')))
+  } finally {
+    await context.stop()
+  }
+})
+
 test('withdraws a card when another client answers first', async () => {
   const context = await harness()
   try {

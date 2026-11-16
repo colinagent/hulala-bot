@@ -32,6 +32,9 @@ export interface LocalRemote {
   readonly workspace: {
     create(request: unknown): Promise<RemoteResult<{ workspace: { workspaceId: unknown } }>>
   }
+  readonly commands: {
+    execute(sessionId: string, line: string): Promise<RemoteResult<unknown>>
+  }
   $on(name: string, handler: (request: unknown, next: () => Promise<unknown>) => Promise<unknown>): () => void
 }
 
@@ -60,6 +63,13 @@ interface HostServices {
   workspaceController: {
     create(request: never): Promise<{ workspace: { workspaceId: unknown } }>
   }
+  /** The live-Agent registry the command service dispatches through. */
+  agents?: {
+    get(sessionId: string): unknown
+  }
+  commands?: {
+    execute(agent: unknown, line: string, attachments: readonly unknown[], signal: AbortSignal): unknown
+  }
 }
 
 /**
@@ -82,6 +92,14 @@ export function createLocalRemote(ctx: Context): LocalRemote {
     },
     workspace: {
       create: request => envelope(() => services.workspaceController.create(request as never)),
+    },
+    commands: {
+      execute: (sessionId, line) => envelope(() => {
+        const agent = services.agents?.get(sessionId)
+        if (agent === undefined) throw new Error(`session ${sessionId} has no live agent`)
+        if (services.commands === undefined) throw new Error('this Host composes no command registry')
+        return services.commands.execute(agent, line, [], lifetime.signal)
+      }),
     },
     $on: (name, handler) => ctx.on(name as never, handler as never) as unknown as () => void,
   }

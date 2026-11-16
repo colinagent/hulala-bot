@@ -36,6 +36,10 @@ export type RemoteFacade = {
   readonly workspace: {
     create(request: unknown): Promise<RemoteResult<any>>
   }
+  /** Run one Host command line against the Session's own live Agent. */
+  readonly commands: {
+    execute(sessionId: string, line: string): Promise<RemoteResult<unknown>>
+  }
   $on(name: string, handler: (...args: any[]) => any): () => void
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

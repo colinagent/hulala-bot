@@ -29,8 +29,8 @@ import { keyOf, type Bindings } from './store/bindings.ts'
 /** Approval outcomes the Host accepts. */
 type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
 
-/** What a button press can decide. */
-type Decision = 'allowed-once' | 'rejected' | 'cancelled'
+/** What a button press can decide. `full-access` also widens the Session. */
+type Decision = 'allowed-once' | 'rejected' | 'cancelled' | 'full-access'
 
 /** Waterfall request as delivered to a bot. */
 interface ApprovalRequest {
@@ -39,6 +39,12 @@ interface ApprovalRequest {
   readonly reason?: string
   readonly displayReason?: unknown
   readonly signal?: AbortSignal
+  /** The Host's live Agent facts; in-process, so its Session id is exact. */
+  readonly agent?: {
+    readonly session?: {
+      readonly id?: string
+    }
+  }
 }
 
 /** Question request as delivered to a bot; the bot only announces it. */
@@ -713,6 +719,7 @@ export class Bridge {
         const messageId = await channel.send(mount.key, project(channel, summary), {
           keyboard: [[
             { text: '允许这一次', data: `approve:${key}` },
+            { text: '完全权限', data: `full:${key}` },
             { text: '拒绝', data: `reject:${key}` },
           ]],
           preview: false,
@@ -729,10 +736,46 @@ export class Bridge {
     }
     const removeAbort = whenAborted(request.signal, () => { this.#settle(key, 'cancelled', '') })
     try {
-      return await outcome
+      const decision = await outcome
+      if (decision !== 'full-access') return decision
+      await this.#grantFullAccess(request, watchers)
+      return 'allowed-once'
     } finally {
       removeAbort()
       this.#pending.delete(key)
+    }
+  }
+
+  /**
+   * Widen one Session after its approval card asked for full access.
+   *
+   * The write path is the Host's own `/permission` command, so the switch lands
+   * in the Session log as `permission/preset`, `sandbox/mode` and
+   * `approval/policy` and every later turn keeps it until the user changes it.
+   * The current call is answered `allowed-once` either way; a failed switch is
+   * reported to the conversation instead of pretending it worked.
+   * @param request - the approval whose card was pressed.
+   * @param watchers - conversations the cards went to.
+   */
+  async #grantFullAccess(request: ApprovalRequest, watchers: readonly Mount[]): Promise<void> {
+    const sessionId = request.agent?.session?.id
+    const mount = sessionId === undefined
+      ? watchers[0]
+      : watchers.find(candidate => candidate.sessionId === sessionId)
+    const backend = this.#backend
+    if (sessionId === undefined || backend === undefined) {
+      this.#log.error('full access: the approval names no live Session')
+      if (mount !== undefined) await this.#say(mount.key, '⚠️ 完全权限没有切换：这条审批没有会话信息')
+      return
+    }
+    try {
+      unwrap(await backend.ctx.remote.commands.execute(sessionId, '/permission danger-full-access'))
+      this.#log.info(`full access enabled for ${sessionId}`)
+      if (mount !== undefined) await this.#say(mount.key, '🔓 本会话已改为完全权限，之后不再询问权限')
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      this.#log.error(`full access failed: ${reason}`)
+      if (mount !== undefined) await this.#say(mount.key, `⚠️ 完全权限没有切换成功：${reason}`)
     }
   }
 
@@ -748,7 +791,7 @@ export class Bridge {
 
   /** Replace every card of one approval with its outcome and drop the buttons. */
   async #closeCards(cards: readonly { chat: ChatKey; messageId: string }[], decision: Decision, by: string): Promise<void> {
-    const text = decision === 'allowed-once'
+    const text = decision === 'allowed-once' || decision === 'full-access'
       ? `✅ 已允许${by === '' ? '' : `（${by}）`}`
       : decision === 'rejected'
         ? `⛔ 已拒绝${by === '' ? '' : `（${by}）`}`
@@ -795,7 +838,7 @@ export class Bridge {
       return
     }
     await channel.answer(callback).catch(() => undefined)
-    this.#settle(key, action === 'approve' ? 'allowed-once' : 'rejected', '手机')
+    this.#settle(key, action === 'approve' ? 'allowed-once' : action === 'full' ? 'full-access' : 'rejected', '手机')
   }
 
   /** Handle one directory button. */

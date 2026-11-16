@@ -382,7 +382,15 @@ A photo sent to the bot (with or without a caption) is downloaded into the opera
 
 Plain text is a prompt. The first message creates a session under `defaultCwd` and mounts it — **one session per conversation**, so a private chat never echoes into a group. Sharing is explicit: `/cwd <path>` mounts the newest session under that directory, and `/switch` picks one from the list.
 
-Approvals arrive as buttons (Telegram inline keyboard / Feishu card actions): "allow once" or "reject". The request carries the tool name and reason, not the command line; showing the exact command would require a `callId` lookup in the session log.
+Approvals arrive as buttons (Telegram inline keyboard / Feishu card actions):
+"allow once", "full access", or "reject". The request carries the tool name and
+reason, not the command line; showing the exact command would require a `callId`
+lookup in the session log. **Full access** answers this request and switches the
+mounted Session to the `danger-full-access` preset through the Host's own
+`/permission` command: that thread stops hitting file-write limits and stops
+asking for permission until you change it with `/permission` on any surface, and
+new Sessions keep their configured default. Questions the agent asks you are a
+separate seam and are unaffected.
 
 ---
 

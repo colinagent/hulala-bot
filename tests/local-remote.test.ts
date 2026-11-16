@@ -72,6 +72,34 @@ test('follow stays a bare async iterable because the bridge iterates it directly
   assert.deepEqual(frames, [{ type: 'snapshot' }, { type: 'event' }])
 })
 
+test('commands.execute resolves the live Agent and delegates the line', async () => {
+  const host = fakeHost()
+  const seen: unknown[] = []
+  const services = host.raw as unknown as Record<string, unknown>
+  services.agents = { get: (sessionId: string) => ({ id: `agent-${sessionId}` }) }
+  services.commands = {
+    execute: (agent: unknown, line: string, attachments: readonly unknown[], signal: AbortSignal) => {
+      seen.push({ agent, line, attachments, aborted: signal.aborted })
+      return { commandId: 'c1' }
+    },
+  }
+  const result = await createLocalRemote(host.ctx).commands.execute('a', '/permission danger-full-access')
+  assert.equal(result.ok, true)
+  assert.deepEqual(seen, [{
+    agent: { id: 'agent-a' },
+    line: '/permission danger-full-access',
+    attachments: [],
+    aborted: false,
+  }])
+})
+
+test('commands.execute fails closed when the Session has no live Agent', async () => {
+  const host = fakeHost()
+  const result = await createLocalRemote(host.ctx).commands.execute('gone', '/permission danger-full-access')
+  assert.equal(result.ok, false)
+  assert.equal(result.ok === false && result.error.message, 'session gone has no live agent')
+})
+
 test('$on subscribes on the Host context and returns its disposer', () => {
   const host = fakeHost()
   const remote = createLocalRemote(host.ctx)
