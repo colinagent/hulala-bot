@@ -22,6 +22,8 @@ export const COMMANDS = [
   { command: 'sessions', description: '列出会话' },
   { command: 'switch', description: '切换到第 n 个会话' },
   { command: 'status', description: '当前会话状态' },
+  { command: 'tasks', description: '列出 Host 上的定时任务' },
+  { command: 'create-auto-task', description: '让 agent 创建一个定时任务' },
   { command: 'stop', description: '停止当前回合' },
 ] as const
 
@@ -35,6 +37,8 @@ export const HELP = [
   '/sessions       最近会话',
   '/switch <n>     切换到第 n 个',
   '/status         会话、目录、运行状态',
+  '/tasks          列出定时任务',
+  '/create-auto-task <需求>  把需求交给 agent 创建定时任务',
   '/stop           停止当前回合',
   '',
   '直接发文字就是提问；审批会以按钮出现，任何一端先点生效。',

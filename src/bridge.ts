@@ -25,6 +25,7 @@ import { mediaTypeOf, takeImageLinks, type ImageLink } from './render/images.ts'
 import { project, ReplyStream } from './reply.ts'
 import { COMMANDS, HELP, parseCommand } from './router.ts'
 import { keyOf, type Bindings } from './store/bindings.ts'
+import { AUTO_TASK_SEED, formatTasks } from './tasks.ts'
 
 /** Approval outcomes the Host accepts. */
 type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
@@ -291,6 +292,15 @@ export class Bridge {
         await this.#say(chat, await this.#describe(chat))
         return
       }
+      case 'tasks': {
+        await this.#listTasks(chat)
+        return
+      }
+      case 'create-auto-task':
+      case 'create_auto_task': {
+        await this.#createAutoTask(message, args)
+        return
+      }
       case 'stop': {
         await this.#stopTurn(chat)
         return
@@ -299,6 +309,32 @@ export class Bridge {
         await this.#say(chat, `未知命令 /${name}\n\n${HELP}`)
       }
     }
+  }
+
+  /** List Host scheduled tasks without mounting or creating a Session. */
+  async #listTasks(chat: ChatKey): Promise<void> {
+    const backend = await this.#ensureHost()
+    try {
+      await this.#say(chat, formatTasks(unwrap(await backend.ctx.remote.schedule.catalog())))
+    } catch (error) {
+      await this.#say(chat, `读取定时任务失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * One automation request as an ordinary turn.
+   *
+   * The seed sentence makes the intent explicit and the rest is the user's own
+   * requirements; the agent owns `schedule_create` and reads the clock and the
+   * client zone, so the bot needs no timing parser of its own.
+   */
+  async #createAutoTask(message: InboundMessage, args: string): Promise<void> {
+    const requirement = args.trim()
+    if (requirement === '') {
+      await this.#say(message.chat, '用法：/create-auto-task <需求>\n例如：/create-auto-task 每天早上 6 点把 BTC 日报发到 Telegram')
+      return
+    }
+    await this.#prompt({ ...message, text: `${AUTO_TASK_SEED}\n${requirement}` })
   }
 
   /** One mounted session's Host summary. */

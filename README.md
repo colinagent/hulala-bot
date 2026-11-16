@@ -373,8 +373,12 @@ The same commands on both channels:
 | `/sessions` | Last 10 sessions, `*` marks the current one |
 | `/switch <n>` | Switch to the n-th |
 | `/status` | Session, directory, running state |
+| `/tasks` | Host scheduled tasks with frequency, next run, and last delivery |
+| `/create-auto-task <requirement>` | Hand the requirement to the agent, which creates the scheduled task |
 | `/stop` | Cancel the running turn |
 | `/help` | All of the above |
+
+Telegram's command menu cannot carry a hyphen, so it lists `/create_auto_task`; typing either spelling works.
 
 **Images.** The bot attaches an image when a reply references it as `![caption](<path>)`. That convention is part of the model's instructions only when the Host mounts `@deepseek-ai/dsh-deliverable-file-references`; Hulala 0.3.5 and later do, as do DSH's own Web and SDK compositions. A reply that only mentions a bare path is not turned into an attachment.
 
@@ -423,7 +427,7 @@ Both channels can run together: each mounts its own sessions, approvals appear o
 ## Development
 
 ```bash
-node --test "tests/*.test.ts"                                  # 108 tests
+node --test "tests/*.test.ts"                                  # 131 tests
 bun run typecheck
 bun run build                                                  # dist/index.mjs + dist/plugin.mjs
 node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # one round against a real Host

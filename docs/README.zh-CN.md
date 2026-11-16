@@ -369,8 +369,12 @@ grep -i "hulala-bot" ~/.hulala/logs/host.log | tail -20
 | `/sessions` | 最近 10 个会话，`*` 表示当前 |
 | `/switch <n>` | 切到第 n 个 |
 | `/status` | 会话、目录、运行状态 |
+| `/tasks` | Host 上的定时任务：频率、下次运行、最近投递 |
+| `/create-auto-task <需求>` | 把需求交给 agent，由它创建定时任务 |
 | `/stop` | 停止当前回合 |
 | `/help` | 上面这些 |
+
+Telegram 的命令菜单不接受连字符，菜单里显示 `/create_auto_task`；两种写法都能用。
 
 **图片。** 机器人只把 `![说明](<路径>)` 这种显式图片引用转成附件；这个约定只有在 Host 挂载 `@deepseek-ai/dsh-deliverable-file-references` 时才会进模型提示词——呼啦啦 0.3.5 起已挂，DSH 自己的 Web/SDK 组合本来就有。只写裸路径的回复不会被当成图片。
 
@@ -411,7 +415,7 @@ grep -i "hulala-bot" ~/.hulala/logs/host.log | tail -20
 ## 开发
 
 ```bash
-node --test "tests/*.test.ts"                                  # 108 个用例
+node --test "tests/*.test.ts"                                  # 131 个用例
 bun run typecheck
 bun run build                                                  # dist/index.mjs + dist/plugin.mjs
 node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # 对真 Host 跑一轮

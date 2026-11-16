@@ -9,6 +9,7 @@
  * @module hulala-bot/host/backend
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { ScheduleTask } from '../tasks.ts'
 
 /** Envelope every Remote call returns; only these fields matter to the bridge. */
 export type RemoteResult<T> =
@@ -39,6 +40,10 @@ export type RemoteFacade = {
   /** Run one Host command line against the Session's own live Agent. */
   readonly commands: {
     execute(sessionId: string, line: string): Promise<RemoteResult<unknown>>
+  }
+  /** Every Host scheduled task; listing needs no Session or live Agent. */
+  readonly schedule: {
+    catalog(): Promise<RemoteResult<readonly ScheduleTask[]>>
   }
   $on(name: string, handler: (...args: any[]) => any): () => void
 }

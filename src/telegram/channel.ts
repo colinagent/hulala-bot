@@ -209,8 +209,14 @@ export class TelegramChannel implements Channel {
 
   /** Publish the command menu, then long-poll until the signal aborts. */
   async start(onEvent: (event: InboundEvent) => Promise<void>, signal: AbortSignal): Promise<void> {
+    // Telegram accepts only `[a-z0-9_]` in a command name; a hyphen makes the
+    // whole `setMyCommands` call fail. The bridge parses both spellings, so the
+    // menu advertises the underscore form of a hyphenated client command.
     void this.#api
-      .setMyCommands(this.#commands.map(command => ({ command: command.command, description: command.description })))
+      .setMyCommands(this.#commands.map(command => ({
+        command: command.command.replaceAll('-', '_'),
+        description: command.description,
+      })))
       .catch(error => { this.#log.error(`setMyCommands failed: ${String(error)}`) })
     let offset = this.#ledger.cursor === 0 ? 0 : this.#ledger.cursor + 1
     let failures = 0

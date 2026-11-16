@@ -361,6 +361,91 @@ test('/status never creates a session just to look at one', async () => {
   }
 })
 
+test('the published command menu only carries names Telegram accepts', async () => {
+  const context = await harness()
+  try {
+    await context.telegram.until(() => context.telegram.of('setMyCommands').length > 0)
+    const body = context.telegram.of('setMyCommands')[0]?.body as { commands?: readonly { command: string }[] }
+    const names = (body.commands ?? []).map(entry => entry.command)
+    for (const name of names) assert.match(name, /^[a-z0-9_]{1,32}$/)
+    assert.ok(names.includes('create_auto_task'))
+  } finally {
+    await context.stop()
+  }
+})
+
+test('/tasks lists Host tasks without creating a session', async () => {
+  const context = await harness()
+  try {
+    context.host.schedule.push({
+      id: 'schedule-1',
+      title: 'BTC 日报',
+      kind: 'daily',
+      status: 'active',
+      time: '06:00:00.000',
+      timeZone: 'Asia/Shanghai',
+      scheduledAt: '2026-11-16T22:00:00.000Z',
+    })
+    context.telegram.push(messageUpdate(1, 10, 1, '/tasks'))
+    await context.telegram.until(() => context.telegram.texts(10).length > 0)
+    const reply = String(context.telegram.texts(10)[0])
+    assert.match(reply, /BTC 日报/)
+    assert.match(reply, /每天 06:00 Asia\/Shanghai/)
+    assert.match(reply, /下次 11-17 06:00/)
+    assert.equal(context.host.created, 0)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('/tasks on an empty Host says how to create one', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '/tasks'))
+    await context.telegram.until(() => context.telegram.texts(10).length > 0)
+    assert.match(String(context.telegram.texts(10)[0]), /\/create-auto-task/)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('/create-auto-task sends the seed and the requirement as one prompt', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '/create-auto-task 每天早上 6 点把 BTC 日报发到 Telegram'))
+    await context.telegram.until(() => context.host.prompts.length > 0)
+    const prompt = String(context.host.prompts[0]?.text)
+    assert.match(prompt, /请根据需求创建一个自动化任务。/)
+    assert.match(prompt, /每天早上 6 点把 BTC 日报发到 Telegram/)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('/create_auto_task is the menu spelling of the same command', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '/create_auto_task 每周一早上 9 点提醒我复盘'))
+    await context.telegram.until(() => context.host.prompts.length > 0)
+    assert.match(String(context.host.prompts[0]?.text), /每周一早上 9 点提醒我复盘/)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('/create-auto-task without requirements answers with usage and sends nothing', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '/create-auto-task'))
+    await context.telegram.until(() => context.telegram.texts(10).length > 0)
+    assert.match(String(context.telegram.texts(10)[0]), /用法：\/create-auto-task/)
+    assert.equal(context.host.prompts.length, 0)
+    assert.equal(context.host.created, 0)
+  } finally {
+    await context.stop()
+  }
+})
+
 test('remounting the same directory does not pile up pinned messages', async () => {
   const context = await harness()
   try {

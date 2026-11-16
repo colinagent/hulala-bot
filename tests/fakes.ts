@@ -9,6 +9,7 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Channel, ChatKey, InboundEvent, Outgoing, SendOptions } from '../src/channel.ts'
+import type { ScheduleTask } from '../src/tasks.ts'
 
 /** One recorded Bot API call. */
 export interface Recorded {
@@ -163,6 +164,8 @@ export class FakeHost {
   readonly followRequests: unknown[] = []
   /** Command lines the bridge ran through `ctx.remote.commands`. */
   readonly commands: { sessionId: string; line: string }[] = []
+  /** Scheduled tasks the bridge can list through `ctx.remote.schedule`. */
+  readonly schedule: ScheduleTask[] = []
   readonly #handlers = new Map<string, (request: unknown, next: () => Promise<unknown>) => Promise<unknown>>()
   readonly #streams = new Set<(frame: unknown) => void>()
   #created = 0
@@ -233,6 +236,9 @@ export class FakeHost {
           host.commands.push({ sessionId, line })
           return ok({ commandId: 'c1' })
         },
+      },
+      schedule: {
+        catalog: () => ok(host.schedule),
       },
     }
     return { ctx: { remote, fiber: { dispose: async () => { host.#disposed = true } } }, endpoint: { version: 'test' }, close: async () => { host.#disposed = true } }

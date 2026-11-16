@@ -14,6 +14,7 @@
  * @module hulala-bot/host/local-remote
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { ScheduleTask } from '../tasks.ts'
 
 /** Envelope `bridge.ts` unwraps; failure carries a message, never a stack. */
 export type RemoteResult<T> =
@@ -34,6 +35,9 @@ export interface LocalRemote {
   }
   readonly commands: {
     execute(sessionId: string, line: string): Promise<RemoteResult<unknown>>
+  }
+  readonly schedule: {
+    catalog(): Promise<RemoteResult<readonly ScheduleTask[]>>
   }
   $on(name: string, handler: (request: unknown, next: () => Promise<unknown>) => Promise<unknown>): () => void
 }
@@ -70,6 +74,10 @@ interface HostServices {
   commands?: {
     execute(agent: unknown, line: string, attachments: readonly unknown[], signal: AbortSignal): unknown
   }
+  /** Host-owned scheduled tasks; the terminal renders the same list. */
+  schedule?: {
+    catalog(): Promise<readonly ScheduleTask[]>
+  }
 }
 
 /**
@@ -99,6 +107,12 @@ export function createLocalRemote(ctx: Context): LocalRemote {
         if (agent === undefined) throw new Error(`session ${sessionId} has no live agent`)
         if (services.commands === undefined) throw new Error('this Host composes no command registry')
         return services.commands.execute(agent, line, [], lifetime.signal)
+      }),
+    },
+    schedule: {
+      catalog: () => envelope(() => {
+        if (services.schedule === undefined) throw new Error('this Host composes no schedule service')
+        return services.schedule.catalog()
       }),
     },
     $on: (name, handler) => ctx.on(name as never, handler as never) as unknown as () => void,

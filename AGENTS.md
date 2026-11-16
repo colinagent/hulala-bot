@@ -22,7 +22,7 @@
 ## 命令
 
 ```bash
-node --test "tests/*.test.ts"      # 108 个用例；假 Host + FakeTelegram + 假飞书平台/transport
+node --test "tests/*.test.ts"      # 131 个用例；假 Host + FakeTelegram + 假飞书平台/transport
 bun run typecheck
 bun run build                      # dist/index.mjs（--init）与 dist/plugin.mjs（Host 插件）
 node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>   # 对真 Host 跑一轮
@@ -40,6 +40,7 @@ node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>   # 对真 Host 跑一
 | `src/channel.ts` | 渠道契约（`ChatKey`、`Outgoing`、`InboundEvent`） |
 | `src/bridge.ts` | 命令、挂载、流式、审批卡片、回调 |
 | `src/reply.ts` | 渠道无关的流式消息：节流、预览、失败降级、超长续发 |
+| `src/tasks.ts` | `/tasks` 的列表格式化与 `/create-auto-task` 的 seed 句（镜像 Host 的 `commandTasks.ts`） |
 | `src/telegram/api.ts` | Bot API（429 `retry_after`、可中断的长轮询） |
 | `src/telegram/channel.ts` | MarkdownV2、inline keyboard、置顶状态、typing、update 去重 |
 | `src/telegram/proxy.ts` | HTTP/HTTPS CONNECT 隧道 fetch（两个渠道共用） |
