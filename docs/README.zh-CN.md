@@ -382,7 +382,7 @@ Telegram 的命令菜单不接受连字符，菜单里显示 `/create_auto_task`
 
 直接发文字就是提问。第一次说话会在 `defaultCwd` 里**为此对话新建**一个会话并挂上——每个对话一个会话，私聊不会把回复串到群里。要共享会话是显式操作：`/cwd <path>` 挂该目录下最近的会话，`/switch` 从列表里挑。
 
-审批会以按钮出现（Telegram inline keyboard / 飞书卡片按钮）：「允许这一次 / 完全权限 / 拒绝」。请求里没有命令行文本，只有工具名与理由。「完全权限」会先放行当前这一次，再通过 Host 自己的 `/permission` 命令把挂载的会话切到 `danger-full-access` 预设：这个会话不再受文件写入限制、也不再询问权限，直到你在任意一端用 `/permission` 改掉；新会话仍然用配置的默认预设。agent 向你提问是另一条通道，不受影响。
+审批会以按钮出现（Telegram inline keyboard / 飞书卡片按钮）：「允许这一次 / 完全权限 / 拒绝」。请求里没有命令行文本，只有工具名与理由。「完全权限」会先放行当前这一次，再通过 Host 自己的 `/permission` 命令把挂载的会话切到 `danger-full-access` 预设：这个会话不再受文件写入限制、也不再询问权限，直到你在任意一端用 `/permission` 改掉；新会话仍然用配置的默认预设。agent 向你提问是另一条通道：只发到挂载提问那个会话的对话，不会再串到别的对话。
 
 ---
 
@@ -415,7 +415,7 @@ Telegram 的命令菜单不接受连字符，菜单里显示 `/create_auto_task`
 ## 开发
 
 ```bash
-node --test "tests/*.test.ts"                                  # 131 个用例
+node --test "tests/*.test.ts"                                  # 136 个用例
 bun run typecheck
 bun run build                                                  # dist/index.mjs + dist/plugin.mjs
 node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # 对真 Host 跑一轮

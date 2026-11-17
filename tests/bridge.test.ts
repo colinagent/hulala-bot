@@ -210,6 +210,74 @@ test('fails closed when no conversation is mounted', async () => {
   }
 })
 
+test('a question from a Session no conversation is mounted to is not announced', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '跑一下'))
+    await context.telegram.until(() => context.host.followRequests.length === 1)
+    let delegated = false
+    const outcome = await context.host.invoke(
+      'user-questions/request',
+      { questions: [{ question: '这张图要做什么？', options: [{ label: '转 SVG' }] }], agent: { session: { id: 's9' } } },
+      async () => {
+        delegated = true
+        return 'unavailable'
+      },
+    )
+    assert.equal(delegated, true)
+    assert.equal(outcome, 'unavailable')
+    assert.equal(context.telegram.texts(10).some(text => text.includes('❓')), false)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('a question is announced only in the conversation mounted to its Session', async () => {
+  const surface = new FakeSurface()
+  const context = await harness({}, surface)
+  try {
+    await surface.whenStarted()
+    await surface.emit({
+      kind: 'message',
+      chat: { channel: 'lark', chatId: 'oc_1' },
+      userId: 'ou_1',
+      text: '群里的活',
+      fromBot: false,
+      messageId: 'om_1',
+    })
+    context.telegram.push(messageUpdate(1, 10, 1, '私聊的活'))
+    await context.telegram.until(() => context.host.prompts.length === 2)
+    const mounted = context.host.prompts.find(prompt => prompt.text === '群里的活')?.sessionId ?? ''
+    assert.notEqual(mounted, '')
+    await context.host.invoke('user-questions/request', {
+      questions: [{ question: '这张图要做什么？', options: [{ label: '转 SVG', description: '描成矢量' }] }],
+      agent: { session: { id: mounted } },
+    })
+    await context.telegram.until(() => surface.sent.some(message => message.text.includes('❓')))
+    const question = surface.sent.find(message => message.text.includes('❓'))?.text ?? ''
+    assert.match(question, /这张图要做什么？\n {2}· 转 SVG — 描成矢量/)
+    assert.equal(context.telegram.texts(10).some(text => text.includes('❓')), false)
+  } finally {
+    await context.stop()
+  }
+})
+
+test('an unnamed question follows the conversations with a turn in flight', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '跑一下'))
+    await context.telegram.until(() => context.host.followRequests.length === 1)
+    await context.host.invoke('user-questions/request', { questions: [{ question: '要哪个？' }] })
+    assert.equal(context.telegram.texts(10).some(text => text.includes('❓')), false)
+    context.host.emit(turnStart())
+    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('正在思考')))
+    await context.host.invoke('user-questions/request', { questions: [{ question: '要哪个？' }] })
+    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('❓ 要哪个？')))
+  } finally {
+    await context.stop()
+  }
+})
+
 test('/cwd starts a new session even when that directory already has one', async () => {
   const context = await harness()
   try {

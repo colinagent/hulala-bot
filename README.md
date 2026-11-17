@@ -394,7 +394,8 @@ mounted Session to the `danger-full-access` preset through the Host's own
 `/permission` command: that thread stops hitting file-write limits and stops
 asking for permission until you change it with `/permission` on any surface, and
 new Sessions keep their configured default. Questions the agent asks you are a
-separate seam and are unaffected.
+separate seam: they are announced in the conversation mounted to the Session
+that asked, and never in a conversation mounted to another one.
 
 ---
 
@@ -427,7 +428,7 @@ Both channels can run together: each mounts its own sessions, approvals appear o
 ## Development
 
 ```bash
-node --test "tests/*.test.ts"                                  # 131 tests
+node --test "tests/*.test.ts"                                  # 136 tests
 bun run typecheck
 bun run build                                                  # dist/index.mjs + dist/plugin.mjs
 node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # one round against a real Host

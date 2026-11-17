@@ -33,6 +33,13 @@ type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
 /** What a button press can decide. `full-access` also widens the Session. */
 type Decision = 'allowed-once' | 'rejected' | 'cancelled' | 'full-access'
 
+/** The Host's live Agent facts; in-process, so its Session id is exact. */
+interface AgentFacts {
+  readonly session?: {
+    readonly id?: string
+  }
+}
+
 /** Waterfall request as delivered to a bot. */
 interface ApprovalRequest {
   readonly toolName: string
@@ -40,12 +47,7 @@ interface ApprovalRequest {
   readonly reason?: string
   readonly displayReason?: unknown
   readonly signal?: AbortSignal
-  /** The Host's live Agent facts; in-process, so its Session id is exact. */
-  readonly agent?: {
-    readonly session?: {
-      readonly id?: string
-    }
-  }
+  readonly agent?: AgentFacts
 }
 
 /** Question request as delivered to a bot; the bot only announces it. */
@@ -55,6 +57,7 @@ interface QuestionRequest {
     readonly header?: string
     readonly options?: readonly { readonly label: string; readonly description?: string }[]
   }[]
+  readonly agent?: AgentFacts
 }
 
 /** One conversation mounted to one session. */
@@ -842,15 +845,29 @@ export class Bridge {
     }
   }
 
-  /** Announce a question so the phone is not left wondering why the turn stalled. */
+  /**
+   * Announce a question, but only on the conversation that is looking at the
+   * Session that asked it.
+   *
+   * `user-questions/request` is a Host-wide waterfall: every Agent's question
+   * arrives here, including the ones a turn started from the TUI raises. A
+   * question may only be answered where the turn is visible, so announcing it in
+   * an unrelated conversation is noise the phone cannot act on.
+   */
   async #onQuestion(request: QuestionRequest, next: () => Promise<unknown>): Promise<unknown> {
+    const sessionId = request.agent?.session?.id
+    // A question only exists inside a running turn, so an unnamed Agent falls
+    // back to the conversations with a turn in flight, exactly as approvals do.
+    const watchers = [...this.#mounts.values()].filter(mount =>
+      sessionId === undefined ? mount.active : mount.sessionId === sessionId)
+    if (watchers.length === 0) return await next()
     const lines = request.questions.map(question => {
       const head = `❓ ${question.question}`
       const options = question.options ?? []
       if (options.length === 0) return head
       return [head, ...options.map(option => `  · ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`)].join('\n')
     })
-    for (const mount of this.#mounts.values()) {
+    for (const mount of watchers) {
       await this.#say(mount.key, [...lines, '', '请在这台机器的 TUI 或 Desktop 上回答。'].join('\n'))
     }
     return await next()
