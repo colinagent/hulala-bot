@@ -8,7 +8,7 @@
  */
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import type { Channel, ChatKey, InboundEvent, Outgoing, SendOptions } from '../src/channel.ts'
+import type { Channel, ChatKey, InboundCallback, InboundEvent, Outgoing, SendOptions } from '../src/channel.ts'
 import type { ScheduleTask } from '../src/tasks.ts'
 
 /** One recorded Bot API call. */
@@ -166,8 +166,15 @@ export class FakeHost {
   readonly commands: { sessionId: string; line: string }[] = []
   /** Scheduled tasks the bridge can list through `ctx.remote.schedule`. */
   readonly schedule: ScheduleTask[] = []
+  /** Late answers the bridge steered through `userQuestions.answer`. */
+  readonly answers: { sessionId: string; callId: string; batch: unknown }[] = []
+  /** What the next `userQuestions.answer` reports instead of accepting. */
+  answerFailure: { message: string; code?: string } | undefined
+  /** Whether `userQuestions.answer` reports the call as still continued. */
+  answerAccepted = true
   readonly #handlers = new Map<string, (request: unknown, next: () => Promise<unknown>) => Promise<unknown>>()
   readonly #streams = new Set<(frame: unknown) => void>()
+  readonly #controlStreams = new Set<(frame: unknown) => void>()
   #created = 0
   #disposed = false
 
@@ -224,6 +231,32 @@ export class FakeHost {
             dispose: () => { closed = true; host.#streams.delete(push) },
           }
         },
+        // The Host-wide projection control stream: tests inject its baseline
+        // and its change frames, exactly as the real session controller does.
+        control: (signal: AbortSignal) => {
+          let closed = false
+          const queue: unknown[] = []
+          let resume: (() => void) | undefined
+          const push = (frame: unknown): void => {
+            queue.push(frame)
+            resume?.()
+          }
+          host.#controlStreams.add(push)
+          signal.addEventListener('abort', () => {
+            closed = true
+            host.#controlStreams.delete(push)
+            resume?.()
+          }, { once: true })
+          return {
+            async *[Symbol.asyncIterator]() {
+              while (!closed) {
+                const frame = queue.shift()
+                if (frame !== undefined) { yield frame; continue }
+                await new Promise<void>(settle => { resume = settle })
+              }
+            },
+          }
+        },
       },
       workspace: {
         create: (request: { path: string }) => {
@@ -239,6 +272,14 @@ export class FakeHost {
       },
       schedule: {
         catalog: () => ok(host.schedule),
+      },
+      userQuestions: {
+        attachWait: (agent: unknown, callId: string, signal: AbortSignal) => host.attachWait(agent, callId, signal),
+        answer: (sessionId: string, callId: string, batch: unknown) => {
+          host.answers.push({ sessionId, callId, batch })
+          if (host.answerFailure !== undefined) return { ok: false, error: host.answerFailure }
+          return ok(host.answerAccepted)
+        },
       },
     }
     return { ctx: { remote, fiber: { dispose: async () => { host.#disposed = true } } }, endpoint: { version: 'test' }, close: async () => { host.#disposed = true } }
@@ -259,6 +300,26 @@ export class FakeHost {
     for (const push of this.#streams) push(frame)
   }
 
+  /** How many Host-wide control streams the bridge has opened. */
+  get controlStreams(): number {
+    return this.#controlStreams.size
+  }
+
+  /** Push one projection control frame into every open control stream. */
+  emitControl(frame: unknown): void {
+    for (const push of this.#controlStreams) push(frame)
+  }
+
+  /** Deliver a complete projection baseline for one Session. */
+  baseline(sessionId: string, values: Record<string, unknown>): void {
+    this.emitControl(projectionBaseline(sessionId, values))
+  }
+
+  /** Deliver the changed projections of one committed Session event. */
+  projection(sessionId: string, values: Record<string, unknown>): void {
+    this.emitControl(projectionChange(sessionId, values))
+  }
+
   /** Invoke one registered waterfall handler. */
   async invoke(name: string, request: unknown, next: () => Promise<unknown> = async () => 'unavailable'): Promise<unknown> {
     const handler = this.#handlers.get(name)
@@ -269,6 +330,31 @@ export class FakeHost {
   /** Whether a handler is registered for one event. */
   handles(name: string): boolean {
     return this.#handlers.has(name)
+  }
+
+  /** Foreground waits a client asked to hold, in order. */
+  readonly waits: { agent: unknown; callId: string; released: boolean }[] = []
+  /** Remaining milliseconds the next `attachWait` frame reports. */
+  waitRemainingMs = 30_000
+  /** Whether an attach yields its one frame and then waits to be released. */
+  holdWaits = true
+
+  /**
+   * Stand in for `userQuestions.attachWait`.
+   *
+   * One `remainingMs` frame, then silence until the client closes the stream —
+   * which is exactly what the Host does while a claim is held, and what makes
+   * `released` the fact a test needs to assert.
+   */
+  async *attachWait(agent: unknown, callId: string, signal: AbortSignal): AsyncIterable<{ remainingMs: number }> {
+    const wait = { agent, callId, released: false }
+    this.waits.push(wait)
+    const ended = new Promise<void>((settle) => {
+      signal.addEventListener('abort', () => { wait.released = true; settle() }, { once: true })
+    })
+    yield { remainingMs: this.waitRemainingMs }
+    if (this.holdWaits) await ended
+    else wait.released = true
   }
 }
 
@@ -300,6 +386,39 @@ export function turnEnd(): unknown {
   return { type: 'event', event: { type: 'turn/end', seq: 3, time: Date.now(), data: { turn: 1, reason: 'completed' } } }
 }
 
+/** A complete live-control baseline carrying one Session's projection values. */
+export function projectionBaseline(sessionId: string, values: Record<string, unknown>): unknown {
+  return {
+    type: 'baseline',
+    value: { projections: { [sessionId]: { asOfSeq: 0, values } } },
+  }
+}
+
+/** One committed event's changed projection views. */
+export function projectionChange(sessionId: string, values: Record<string, unknown>): unknown {
+  return {
+    type: 'projection',
+    sessionId,
+    seq: 1,
+    changes: Object.entries(values).map(([key, val]) => ({ key, val })),
+  }
+}
+
+/** One `userQuestions` projection view with a single continued call. */
+export function continuedQuestions(callId: string, questions: readonly Record<string, unknown>[]): Record<string, unknown> {
+  return { userQuestions: { active: [{ callId, questions, state: 'continued' }], settled: [] } }
+}
+
+/** One inbox projection view with a queued late reply. */
+export function queuedReply(callId: string): Record<string, unknown> {
+  return {
+    inbox: {
+      'next-step': [{ source: { kind: 'user-question-reply', callId } }],
+      'next-turn': [],
+    },
+  }
+}
+
 /** One recorded message on a surface that is not Telegram. */
 export interface SurfaceMessage {
   readonly chat: ChatKey
@@ -321,6 +440,8 @@ export class FakeSurface implements Channel {
   readonly pinnedStatus = false
   readonly sent: SurfaceMessage[] = []
   readonly edits: SurfaceMessage[] = []
+  /** Toast texts the bridge answered a button press with. */
+  readonly toasts: string[] = []
   #next = 0
   #onEvent: ((event: InboundEvent) => Promise<void>) | undefined
   #ready: { promise: Promise<void>; resolve: () => void } = (() => {
@@ -358,8 +479,8 @@ export class FakeSurface implements Channel {
     // Nothing to release.
   }
 
-  async answer(): Promise<void> {
-    // The toast is a Lark transport detail; nothing to record here.
+  async answer(_event: InboundCallback, text?: string): Promise<void> {
+    if (text !== undefined) this.toasts.push(text)
   }
 
   /** Resolves once the bridge has started this surface. */

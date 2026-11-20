@@ -57,15 +57,16 @@ node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>   # 对真 Host 跑一
 
 ## 版本约束
 
-`package.json` 的 `engines.dsh`（`>=0.2.2-rc.1 <0.3.0`）。装载器在 import 之前校验，不匹配就跳过并向 `skippedBundles` 报告；`@deepseek-ai/dsh-*` 必须是 **peerDependencies**，否则 profile 里会出现第二份，`Remote` 注册表就分裂了。`@larksuiteoapi/node-sdk` 只在长连接里动态 import，构建时标记为 external，所以只装 Telegram 的机器也用得上 `--init`。
+`package.json` 的 `engines.dsh`（`>=0.2.2-rc.5 <0.3.0`）。装载器在 import 之前校验，不匹配就跳过并向 `skippedBundles` 报告；`@deepseek-ai/dsh-*` 必须是 **peerDependencies**，否则 profile 里会出现第二份，`Remote` 注册表就分裂了。`@larksuiteoapi/node-sdk` 只在长连接里动态 import，构建时标记为 external，所以只装 Telegram 的机器也用得上 `--init`。
 
 改 DSH 依赖版本时跟着上游 minor 走，并在真机上重跑 `scripts/spike-host.ts`。
 
-## 三个不显然的坑
+## 四个不显然的坑
 
-1. **必须 `ctx.typert.contexts.registerClient('agent', { identity: () => undefined, resolve: () => ctx })`**，否则 waterfall 会被 Gateway 静默丢弃——不报错，只是永远收不到。
+1. **Host 内插件不要注册 `registerClient('agent')`**。旧版 bot 是独立进程，必须注册客户端 adapter 才收得到 waterfall；现在 `host/local-remote.ts` 直接把 `$on` 转发到 Cordis 事件，`plugin.ts` 只 inject `sessionController` / `workspaceController`。客户端侧（TUI、官方 Web）才需要 `registerClient('agent')`，而且 `identity` / `resolve` **必须保留 Session 身份**：写成 `{ identity: () => undefined, resolve: () => ctx }` 会把所有 `agentId` 压成同一个 root ctx，`request.agent.session.id` 随之丢失，审批无从归属、只能被下游无条件广播——这正是 2026-11-19 那次「SSH 会话的审批跑到 Telegram 上」的根因，不要照抄旧笔记。
 2. **`const on = ctx.remote.$on` 会丢 Cordis shadow-method 的 `this`**，报错会说「requires interactions=answer」，实际是解绑了。永远写成 `ctx.remote.$on(...)`。
 3. **本机默认 permission preset 直接放行危险命令**，所以 `rm -rf` 不会触发审批卡片；真机验审批要先切到 `workspace-write`。
+4. **提问不是「通知 + 转发」，是「一个 answerer + 一个投影消费者」**。`#onQuestion` 在 `user-questions/request` waterfall 里返回 `AskUserQuestionAnswer`，只有显式「交给他端」才 `next()`；超时后的补答靠 `sessionController.control(signal)` 的 `userQuestions` / `inbox` 投影（和官方 Web 客户端同一条流）＋ `userQuestions.answer`，后者要 `ctx.get('agents').get(sessionId)` 拿**精确实例**，快照对象会被 `assertLiveRoot` 拒掉。卡片以 `question:<sessionId>:<callId>` 为键，waterfall 与投影共用一张；持 `attachWait` claim 时 Host 停自己的 timer，所以必须本地倒计时并以 `ASK_TIMED_OUT` reject，`finally` 里一定 dispose claim，否则问题永不超时。`#drop` / `stop()` 要把所有 live waterfall `delegate()` 回去，否则 Host 永久挂起。
 
 ## 飞书的三个硬约束
 

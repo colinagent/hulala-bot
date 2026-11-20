@@ -382,7 +382,11 @@ Telegram 的命令菜单不接受连字符，菜单里显示 `/create_auto_task`
 
 直接发文字就是提问。第一次说话会在 `defaultCwd` 里**为此对话新建**一个会话并挂上——每个对话一个会话，私聊不会把回复串到群里。要共享会话是显式操作：`/cwd <path>` 挂该目录下最近的会话，`/switch` 从列表里挑。
 
-审批会以按钮出现（Telegram inline keyboard / 飞书卡片按钮）：「允许这一次 / 完全权限 / 拒绝」。请求里没有命令行文本，只有工具名与理由。「完全权限」会先放行当前这一次，再通过 Host 自己的 `/permission` 命令把挂载的会话切到 `danger-full-access` 预设：这个会话不再受文件写入限制、也不再询问权限，直到你在任意一端用 `/permission` 改掉；新会话仍然用配置的默认预设。agent 向你提问是另一条通道：只发到挂载提问那个会话的对话，不会再串到别的对话。
+审批会以按钮出现（Telegram inline keyboard / 飞书卡片按钮）：「允许这一次 / 完全权限 / 拒绝」。请求里没有命令行文本，只有工具名与理由。「完全权限」会先放行当前这一次，再通过 Host 自己的 `/permission` 命令把挂载的会话切到 `danger-full-access` 预设：这个会话不再受文件写入限制、也不再询问权限，直到你在任意一端用 `/permission` 改掉；新会话仍然用配置的默认预设。
+
+agent 向你提问是另一条通道：卡片只发到挂载提问那个会话的对话，不会再串到别的对话。机器人是 DSH `user-questions/request` waterfall 上的**真正 answerer**——选一个选项（多选可以选多个）、或者发一段文字当自定义答案，再按「提交」，答案批量直接回到正在等待的工具调用；Computer-Use 的权限请求是固定三按钮卡片，按一下就是完整答案。「交给他端」把 waterfall 交给下一个客户端，TUI 上那个「交给其他端」键到达的就是这里。
+
+带倒计时的 `ask_user_question` 还有第二个回答窗口：机器人在窗口内持有 Host 的前台 wait（`attachWait` 报剩余时间、卡片本地倒计时），到点以 `ASK_TIMED_OUT` 结束这次调用，工具结果变成 `pending`。此后会话的 `userQuestions` 投影把这次调用标成 `continued`，机器人通过和官方 Web 客户端同一个 control 流消费投影，于是**同一张 `(sessionId, callId)` 卡片**继续可答：按下按钮走 `userQuestions.answer`，答案以 `user-question-reply` 在下一轮进入 agent。inbox 里已有排队答案时卡片先撤下，投影关行时才真正删除。这里没有自定义协议：waterfall、claim 和两个投影都是 DSH 自己的契约，只是把 React 换成了聊天按钮。
 
 ---
 
@@ -423,7 +427,7 @@ node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # 对真 Host 跑
 
 需要 Node ≥ 22.6。飞书的 REST 用注入的 `fetch` 测，长连接用假 transport 测，测试不需要租户、不需要网络。
 
-版本约束：`engines.dsh` 声明 DSH 兼容范围（当前 `>=0.2.2-rc.1 <0.3.0`），装载器在 import 之前校验，不满足就跳过并写进 `skippedBundles`；`@deepseek-ai/dsh-*` 必须是 peerDependencies，避免出现第二份注册表。
+版本约束：`engines.dsh` 声明 DSH 兼容范围（当前 `>=0.2.2-rc.5 <0.3.0`），装载器在 import 之前校验，不满足就跳过并写进 `skippedBundles`；`@deepseek-ai/dsh-*` 必须是 peerDependencies，避免出现第二份注册表。
 
 更细的架构与坑：见仓库里的 `AGENTS.md`。
 

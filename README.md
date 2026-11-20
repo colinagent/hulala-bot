@@ -394,8 +394,26 @@ mounted Session to the `danger-full-access` preset through the Host's own
 `/permission` command: that thread stops hitting file-write limits and stops
 asking for permission until you change it with `/permission` on any surface, and
 new Sessions keep their configured default. Questions the agent asks you are a
-separate seam: they are announced in the conversation mounted to the Session
-that asked, and never in a conversation mounted to another one.
+separate seam: they are announced only in the conversation mounted to the
+Session that asked, and the bot is a real answerer on DSH's
+`user-questions/request` waterfall — pick an option (or several on a
+multi-select question), type a custom answer, and press **submit**; the answer
+batch goes straight back to the waiting tool call. A Computer-Use permission
+request is a fixed three-button card where one press is the whole answer.
+**Hand it on** delegates the waterfall to the next client instead, which is
+what the TUI's "hand to another client" key reaches.
+
+A timed `ask_user_question` has a second answer window. The bot claims the
+Host's foreground wait while it is open — `attachWait` reports the remaining
+time, the card counts down locally, and at zero the request rejects with
+`ASK_TIMED_OUT`. The tool call then ends as `pending`, and the Session's
+`userQuestions` projection lists that call as `continued`. The bot consumes
+that projection through the same Host control stream the Web client uses, so
+the same `(sessionId, callId)` card stays answerable: a late press calls
+`userQuestions.answer`, which steers a `user-question-reply` into the agent
+for its next turn. A reply already queued in the inbox withdraws the card,
+and the projection closing the row removes it. Nothing here is a bot-specific
+protocol — the waterfall, the claim, and both projections are DSH's own.
 
 ---
 
@@ -436,7 +454,7 @@ node scripts/spike-host.ts <dsh-bin> <dsh-home> <profile>      # one round again
 
 Node ≥ 22.6. Feishu REST is tested against an injected `fetch`, the long connection against a fake transport — no tenant, no network.
 
-Version gate: `engines.dsh` declares the DSH range (`>=0.2.2-rc.1 <0.3.0`); the loader checks before import, skips incompatible bundles and reports them in `skippedBundles`; `@deepseek-ai/dsh-*` must stay peer dependencies so no second registry appears.
+Version gate: `engines.dsh` declares the DSH range (`>=0.2.2-rc.5 <0.3.0`); the loader checks before import, skips incompatible bundles and reports them in `skippedBundles`; `@deepseek-ai/dsh-*` must stay peer dependencies so no second registry appears.
 
 Deeper architecture and traps: `AGENTS.md` in the repository.
 

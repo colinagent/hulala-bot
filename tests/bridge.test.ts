@@ -16,12 +16,13 @@ import {
   assistantMessage,
   attemptStart,
   callbackUpdate,
+  continuedQuestions,
   FakeHost,
   FakeSurface,
   FakeTelegram,
   messageUpdate,
   photoUpdate,
-  type SurfaceMessage,
+  queuedReply,
   textDelta,
   turnEnd,
   turnStart,
@@ -72,6 +73,94 @@ async function harness(overrides: Partial<BridgeConfig> = {}, surface?: FakeSurf
     await telegram.stop()
   }
   return { telegram, host, bridge, config, stateDir, defaultCwd, stop }
+}
+
+/** The only chat a question test mounts. */
+const QUESTION_CHAT = { channel: 'lark' as const, chatId: 'oc_1' }
+
+/** One question with two options; overrides replace any field. */
+function question(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'q1',
+    question: '用哪个数据库？',
+    options: [{ label: 'Postgres' }, { label: 'SQLite' }],
+    ...overrides,
+  }
+}
+
+/** A bridge whose only mounted conversation is a fake surface. */
+async function questionHarness() {
+  const surface = new FakeSurface()
+  const context = await harness({}, surface)
+  await surface.whenStarted()
+  await context.telegram.until(() => context.host.controlStreams > 0, 4000)
+  await surface.emit({
+    kind: 'message',
+    chat: QUESTION_CHAT,
+    userId: 'ou_1',
+    text: '跑一下',
+    fromBot: false,
+    messageId: 'om_1',
+  })
+  await context.telegram.until(() => context.host.prompts.length === 1)
+  return { ...context, surface, sessionId: context.host.prompts[0]?.sessionId ?? 's1' }
+}
+
+/** The most recent question card that still carries buttons. */
+function cardOf(surface: FakeSurface) {
+  const withButtons = [...surface.sent, ...surface.edits].filter(message => (message.keyboard?.length ?? 0) > 0)
+  const last = withButtons.at(-1)
+  assert.ok(last !== undefined, 'no question card with buttons was sent')
+  return last
+}
+
+/** The callback data of one button, matched by a fragment of its label. */
+function buttonOf(surface: FakeSurface, label: string): string {
+  const buttons = cardOf(surface).keyboard?.flat() ?? []
+  const found = buttons.find(button => button.text.includes(label))
+  assert.ok(found !== undefined, `no button ${label}; got ${buttons.map(button => button.text).join(', ')}`)
+  return found.data
+}
+
+let callbackSequence = 100
+
+/** Deliver one button press to the surface that owns the current card. */
+async function press(surface: FakeSurface, data: string): Promise<void> {
+  const card = cardOf(surface)
+  callbackSequence += 1
+  await surface.emit({
+    kind: 'callback',
+    chat: card.chat,
+    userId: 'ou_1',
+    callbackId: `cb${String(callbackSequence)}`,
+    messageId: card.messageId,
+    data,
+  })
+}
+
+/** Wait until a card whose text contains `fragment` was sent or edited. */
+async function untilCard(surface: FakeSurface, fragment: string, timeoutMs = 4000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (![...surface.sent, ...surface.edits].some(message => message.text.includes(fragment))) {
+    if (Date.now() > deadline) throw new Error(`no card containing ${fragment}`)
+    await new Promise(settle => setTimeout(settle, 10))
+  }
+}
+
+/** Wait until the last edit of a surface dropped every button. */
+async function untilSettled(surface: FakeSurface, fragment: string, timeoutMs = 4000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const last = surface.edits.at(-1)
+    if (last?.text.includes(fragment) === true && (last.keyboard?.length ?? 0) === 0) return
+    if (Date.now() > deadline) throw new Error(`no settled card containing ${fragment}`)
+    await new Promise(settle => setTimeout(settle, 10))
+  }
+}
+
+/** One waterfall request for the Session a question harness mounted. */
+function requestFor(sessionId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { questions: [question()], agent: { session: { id: sessionId } }, ...overrides }
 }
 
 test('answers /help without touching the Host', async () => {
@@ -137,7 +226,12 @@ test('renders an approval as buttons and settles it on press', async () => {
     await context.telegram.until(() => context.host.followRequests.length === 1)
     context.host.emit(turnStart())
     await new Promise(settle => setTimeout(settle, 60))
-    const outcome = context.host.invoke('approval/request', { toolName: 'bash', reason: 'rm -rf /tmp/x', signal: new AbortController().signal })
+    const outcome = context.host.invoke('approval/request', {
+      toolName: 'bash',
+      reason: 'rm -rf /tmp/x',
+      signal: new AbortController().signal,
+      agent: { session: { id: 's1' } },
+    })
     await context.telegram.until(() => context.telegram.of('sendMessage').some(call => call.body.reply_markup !== undefined))
     const card = context.telegram.of('sendMessage').find(call => call.body.reply_markup !== undefined)
     const keyboard = (card?.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard
@@ -185,7 +279,11 @@ test('withdraws a card when another client answers first', async () => {
     context.host.emit(turnStart())
     await new Promise(settle => setTimeout(settle, 60))
     const controller = new AbortController()
-    const outcome = context.host.invoke('approval/request', { toolName: 'bash', signal: controller.signal })
+    const outcome = context.host.invoke('approval/request', {
+      toolName: 'bash',
+      signal: controller.signal,
+      agent: { session: { id: 's1' } },
+    })
     await context.telegram.until(() => context.telegram.of('sendMessage').some(call => call.body.reply_markup !== undefined))
     controller.abort()
     assert.equal(await outcome, 'cancelled')
@@ -205,6 +303,30 @@ test('fails closed when no conversation is mounted', async () => {
     })
     assert.equal(delegated, true)
     assert.equal(outcome, 'unavailable')
+  } finally {
+    await context.stop()
+  }
+})
+
+test('an approval for a Session no conversation watches is delegated, not broadcast', async () => {
+  const context = await harness()
+  try {
+    context.telegram.push(messageUpdate(1, 10, 1, '跑一下'))
+    await context.telegram.until(() => context.host.followRequests.length === 1)
+    context.host.emit(turnStart())
+    await new Promise(settle => setTimeout(settle, 60))
+    let delegated = false
+    const outcome = await context.host.invoke('approval/request', {
+      toolName: 'bash',
+      reason: 'escalate sandbox to danger-full-access',
+      agent: { session: { id: 'foreign-session' } },
+    }, async () => {
+      delegated = true
+      return 'unavailable'
+    })
+    assert.equal(delegated, true)
+    assert.equal(outcome, 'unavailable')
+    assert.equal(context.telegram.of('sendMessage').filter(call => call.body.reply_markup !== undefined).length, 0)
   } finally {
     await context.stop()
   }
@@ -232,50 +354,333 @@ test('a question from a Session no conversation is mounted to is not announced',
   }
 })
 
-test('a question is announced only in the conversation mounted to its Session', async () => {
-  const surface = new FakeSurface()
-  const context = await harness({}, surface)
+test('an unnamed question is delegated, never broadcast to a running conversation', async () => {
+  const context = await harness()
   try {
-    await surface.whenStarted()
-    await surface.emit({
-      kind: 'message',
-      chat: { channel: 'lark', chatId: 'oc_1' },
-      userId: 'ou_1',
-      text: '群里的活',
-      fromBot: false,
-      messageId: 'om_1',
+    context.telegram.push(messageUpdate(1, 10, 1, '跑一下'))
+    await context.telegram.until(() => context.host.followRequests.length === 1)
+    let delegated = false
+    const outcome = await context.host.invoke('user-questions/request', {
+      questions: [{ question: '要哪个？' }],
+    }, async () => {
+      delegated = true
+      return 'unavailable'
     })
-    context.telegram.push(messageUpdate(1, 10, 1, '私聊的活'))
-    await context.telegram.until(() => context.host.prompts.length === 2)
-    const mounted = context.host.prompts.find(prompt => prompt.text === '群里的活')?.sessionId ?? ''
-    assert.notEqual(mounted, '')
-    await context.host.invoke('user-questions/request', {
-      questions: [{ question: '这张图要做什么？', options: [{ label: '转 SVG', description: '描成矢量' }] }],
-      agent: { session: { id: mounted } },
-    })
-    await context.telegram.until(() => surface.sent.some(message => message.text.includes('❓')))
-    const question = surface.sent.find(message => message.text.includes('❓'))?.text ?? ''
-    assert.match(question, /这张图要做什么？\n {2}· 转 SVG — 描成矢量/)
+    assert.equal(delegated, true)
+    assert.equal(outcome, 'unavailable')
+    // A question with no owning Session must not be announced in whichever chat
+    // happens to have a turn in flight — that is the misrouting approvals had.
     assert.equal(context.telegram.texts(10).some(text => text.includes('❓')), false)
   } finally {
     await context.stop()
   }
 })
 
-test('an unnamed question follows the conversations with a turn in flight', async () => {
-  const context = await harness()
+test('a question is answered on the conversation mounted to its Session, not on another one', async () => {
+  const { surface, host, telegram, sessionId, stop } = await questionHarness()
   try {
-    context.telegram.push(messageUpdate(1, 10, 1, '跑一下'))
-    await context.telegram.until(() => context.host.followRequests.length === 1)
-    await context.host.invoke('user-questions/request', { questions: [{ question: '要哪个？' }] })
-    assert.equal(context.telegram.texts(10).some(text => text.includes('❓')), false)
-    context.host.emit(turnStart())
-    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('正在思考')))
-    await context.host.invoke('user-questions/request', { questions: [{ question: '要哪个？' }] })
-    await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('❓ 要哪个？')))
+    const outcome = host.invoke('user-questions/request', requestFor(sessionId), async () => 'downstream')
+    await untilCard(surface, '用哪个数据库？')
+    assert.equal(telegram.texts(10).some(text => text.includes('❓')), false)
+    await press(surface, buttonOf(surface, 'Postgres'))
+    await press(surface, buttonOf(surface, '提交'))
+    // The bot is a real answerer: it returns a structured batch instead of next().
+    assert.deepEqual(await outcome, { answers: [{ id: 'q1', selected: ['Postgres'] }] })
+    await untilSettled(surface, '已在本端回答')
+  } finally {
+    await stop()
+  }
+})
+
+test('a question batch collects one answer item per question id', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  try {
+    const questions = [
+      question(),
+      question({ id: 'q2', question: '部署到哪里？', options: [{ label: '本机' }, { label: '云端' }] }),
+    ]
+    const outcome = host.invoke('user-questions/request', requestFor(sessionId, { questions }), async () => 'downstream')
+    await untilCard(surface, '第 1/2 题')
+    await press(surface, buttonOf(surface, '提交'))
+    assert.ok(surface.toasts.some(toast => toast.includes('每道题都要选一个选项')))
+    await press(surface, buttonOf(surface, 'Postgres'))
+    await press(surface, buttonOf(surface, '下一题'))
+    await untilCard(surface, '第 2/2 题')
+    await press(surface, buttonOf(surface, '云端'))
+    await press(surface, buttonOf(surface, '提交'))
+    assert.deepEqual(await outcome, { answers: [
+      { id: 'q1', selected: ['Postgres'] },
+      { id: 'q2', selected: ['云端'] },
+    ] })
+  } finally {
+    await stop()
+  }
+})
+
+test('a multi-select question toggles its option labels in the answer batch', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  try {
+    const outcome = host.invoke('user-questions/request',
+      requestFor(sessionId, { questions: [question({ multiSelect: true })] }), async () => 'downstream')
+    await untilCard(surface, '可多选')
+    await press(surface, buttonOf(surface, 'Postgres'))
+    await press(surface, buttonOf(surface, 'SQLite'))
+    await press(surface, buttonOf(surface, '提交'))
+    assert.deepEqual(await outcome, { answers: [{ id: 'q1', selected: ['Postgres', 'SQLite'] }] })
+  } finally {
+    await stop()
+  }
+})
+
+test('a custom answer typed in chat becomes the answer and never prompts the agent', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  try {
+    const outcome = host.invoke('user-questions/request', requestFor(sessionId), async () => 'downstream')
+    await untilCard(surface, '用哪个数据库？')
+    await press(surface, buttonOf(surface, '自定义答案'))
+    await surface.emit({
+      kind: 'message', chat: QUESTION_CHAT, userId: 'ou_1',
+      text: '  MySQL  ', fromBot: false, messageId: 'om_custom',
+    })
+    assert.equal(host.prompts.length, 1) // only the mount prompt
+    await untilCard(surface, 'MySQL')
+    await press(surface, buttonOf(surface, '提交'))
+    assert.deepEqual(await outcome, { answers: [{ id: 'q1', selected: [], custom: 'MySQL' }] })
+  } finally {
+    await stop()
+  }
+})
+
+test('a Computer-Use approval question is decided by one button press', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  try {
+    const outcome = host.invoke('user-questions/request', requestFor(sessionId, {
+      questions: [{
+        id: 'q1',
+        question: 'Allow the camera?',
+        detail: 'example.com asks for the camera',
+        options: [{ label: '允许' }, { label: '拒绝' }, { label: '一直允许' }],
+        intent: {
+          kind: 'approval',
+          approve: '允许',
+          reject: '拒绝',
+          always: '一直允许',
+          subject: { name: 'example.com' },
+          display: {
+            question: { en: 'Allow the camera?', zh: '允许使用摄像头吗？' },
+            detail: { en: 'example.com asks for the camera', zh: 'example.com 请求使用摄像头' },
+          },
+        },
+      }],
+    }), async () => 'downstream')
+    await untilCard(surface, '🛡')
+    assert.match(cardOf(surface).text, /🛡 需要授权 · example\.com/)
+    assert.match(cardOf(surface).text, /允许使用摄像头吗？/)
+    assert.match(cardOf(surface).text, /✓ 允许/)
+    // One press is the whole answer: there is no submit row on a fixed card.
+    assert.equal(cardOf(surface).keyboard?.flat().some(button => button.text.includes('提交')), false)
+    await press(surface, buttonOf(surface, '拒绝'))
+    assert.deepEqual(await outcome, { answers: [{ id: 'q1', selected: ['拒绝'] }] })
+  } finally {
+    await stop()
+  }
+})
+
+test('a continued approval row keeps its intent and shows the localized approve label', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  try {
+    host.baseline(sessionId, continuedQuestions('c7', [{
+      id: 'q1',
+      question: 'Allow the camera?',
+      detail: 'example.com asks for the camera',
+      options: [{ label: '允许' }, { label: '拒绝' }],
+      intent: {
+        kind: 'approval',
+        approve: '允许',
+        reject: '拒绝',
+        subject: { name: 'example.com' },
+        display: {
+          question: { en: 'Allow the camera?', zh: '允许使用摄像头吗？' },
+          approve: { en: 'Allow', zh: '同意使用' },
+        },
+      },
+    }]))
+    await untilCard(surface, '补答会在下一轮进入 agent')
+    const card = cardOf(surface)
+    // `questionItems()` must not strip a projection row's intent: without it a
+    // CUA permission request would become an ordinary free-text question.
+    assert.match(card.text, /🛡 需要授权 · example\.com/)
+    assert.match(card.text, /允许使用摄像头吗？/)
+    assert.match(card.text, /✓ 同意使用/)
+    assert.doesNotMatch(card.text, /自定义答案/)
+    assert.equal(card.keyboard?.flat().some(button => button.text.includes('提交')), false)
+    // `display.approve` is presentation only. Buttons and the answer Remote
+    // still carry the wire option labels.
+    await press(surface, buttonOf(surface, '拒绝'))
+    await untilCard(surface, '已提交')
+    assert.deepEqual(host.answers[0]?.batch, { answers: [{ id: 'q1', selected: ['拒绝'] }] })
+  } finally {
+    await stop()
+  }
+})
+
+test('a timed question holds the claim, rejects ASK_TIMED_OUT, then accepts a late answer', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  host.waitRemainingMs = 150
+  try {
+    const outcome = host.invoke('user-questions/request', requestFor(sessionId, {
+      questions: [question()], wait: { callId: 'c9', timed: true },
+    }), async () => 'downstream')
+    await untilCard(surface, '还剩')
+    assert.equal(host.waits.length, 1)
+    assert.equal(host.waits[0]?.callId, 'c9')
+    // The Host stops its own timer while a client holds the claim, so the
+    // client must settle the waterfall with the wire-preserved timeout code.
+    await assert.rejects(outcome, (error: unknown) =>
+      (error as { code?: unknown }).code === 'ASK_TIMED_OUT')
+    await untilCard(surface, '回答窗口已关闭')
+    assert.equal(host.waits[0]?.released, true)
+    // The projection is the only source of a late answer: it flips the same
+    // timed call to `continued` and gives its card the answer Remote path.
+    host.projection(sessionId, continuedQuestions('c9', [question()]))
+    await untilCard(surface, '补答会在下一轮进入 agent')
+    assert.equal(surface.sent.filter(message => message.text.includes('❓')).length, 1)
+    await press(surface, buttonOf(surface, 'Postgres'))
+    await press(surface, buttonOf(surface, '提交'))
+    await untilCard(surface, '已提交')
+    assert.deepEqual(host.answers, [{
+      sessionId, callId: 'c9', batch: { answers: [{ id: 'q1', selected: ['Postgres'] }] },
+    }])
+  } finally {
+    await stop()
+  }
+})
+
+test('a continued question from the control baseline becomes an answerable card', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  try {
+    host.baseline(sessionId, continuedQuestions('c7', [question()]))
+    await untilCard(surface, '补答会在下一轮进入 agent')
+    await press(surface, buttonOf(surface, 'SQLite'))
+    await press(surface, buttonOf(surface, '提交'))
+    await untilCard(surface, '已提交')
+    assert.equal(host.answers[0]?.callId, 'c7')
+    assert.deepEqual(host.answers[0]?.batch, { answers: [{ id: 'q1', selected: ['SQLite'] }] })
+  } finally {
+    await stop()
+  }
+})
+
+test('a queued late reply withdraws the editable card until the projection closes the row', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  try {
+    host.baseline(sessionId, continuedQuestions('c7', [question()]))
+    await untilCard(surface, '补答会在下一轮进入 agent')
+    host.projection(sessionId, { ...continuedQuestions('c7', [question()]), ...queuedReply('c7') })
+    await untilSettled(surface, '已结算')
+    assert.equal(host.answers.length, 0)
+  } finally {
+    await stop()
+  }
+})
+
+test('answer() returning false says the call is no longer answerable', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  host.answerAccepted = false
+  try {
+    host.baseline(sessionId, continuedQuestions('c7', [question()]))
+    await untilCard(surface, '补答会在下一轮进入 agent')
+    await press(surface, buttonOf(surface, 'Postgres'))
+    await press(surface, buttonOf(surface, '提交'))
+    await untilCard(surface, '不可补答')
+  } finally {
+    await stop()
+  }
+})
+
+test('REPLY_QUEUED is reported as a queued answer, not a generic failure', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  host.answerFailure = { message: 'a reply is already queued for this question', code: 'REPLY_QUEUED' }
+  try {
+    host.baseline(sessionId, continuedQuestions('c7', [question()]))
+    await untilCard(surface, '补答会在下一轮进入 agent')
+    await press(surface, buttonOf(surface, 'Postgres'))
+    await press(surface, buttonOf(surface, '提交'))
+    await untilCard(surface, '答案已在排队')
+    assert.equal(surface.toasts.some(toast => toast.includes('提交失败')), false)
+  } finally {
+    await stop()
+  }
+})
+
+test('handing a question on delegates the waterfall, and the projection reveals the same card', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  try {
+    const outcome = host.invoke('user-questions/request', requestFor(sessionId, {
+      questions: [question()], wait: { callId: 'c7' },
+    }), async () => 'downstream')
+    await untilCard(surface, '用哪个数据库？')
+    await press(surface, buttonOf(surface, '交给他端'))
+    assert.equal(await outcome, 'downstream')
+    await untilSettled(surface, '已交给其他端')
+    // The card is hidden, not duplicated: the continued row reuses it.
+    host.projection(sessionId, continuedQuestions('c7', [question()]))
+    await untilCard(surface, '补答会在下一轮进入 agent')
+    assert.equal(surface.sent.filter(message => message.text.includes('❓')).length, 1)
+    await press(surface, buttonOf(surface, 'Postgres'))
+    await press(surface, buttonOf(surface, '提交'))
+    await untilCard(surface, '已提交')
+    assert.equal(host.answers[0]?.callId, 'c7')
+  } finally {
+    await stop()
+  }
+})
+
+test('an open projection row does not create a second card for the same call', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  try {
+    const open = { userQuestions: { active: [{ callId: 'c7', questions: [question()], state: 'open' }], settled: [] } }
+    host.baseline(sessionId, open)
+    const outcome = host.invoke('user-questions/request', requestFor(sessionId, {
+      questions: [question()], wait: { callId: 'c7' },
+    }), async () => 'downstream')
+    await untilCard(surface, '用哪个数据库？')
+    assert.equal(surface.sent.filter(message => message.text.includes('❓')).length, 1)
+    await press(surface, buttonOf(surface, 'Postgres'))
+    await press(surface, buttonOf(surface, '提交'))
+    assert.deepEqual(await outcome, { answers: [{ id: 'q1', selected: ['Postgres'] }] })
+  } finally {
+    await stop()
+  }
+})
+
+test('a projection read before a chat mounted is reconciled when the mount appears', async () => {
+  const surface = new FakeSurface()
+  const context = await harness({}, surface)
+  try {
+    await surface.whenStarted()
+    await context.telegram.until(() => context.host.controlStreams > 0, 4000)
+    context.host.baseline('s1', continuedQuestions('c8', [question()]))
+    await surface.emit({
+      kind: 'message', chat: QUESTION_CHAT, userId: 'ou_1',
+      text: '跑一下', fromBot: false, messageId: 'om_1',
+    })
+    await untilCard(surface, '补答会在下一轮进入 agent')
+    await press(surface, buttonOf(surface, 'Postgres'))
+    await press(surface, buttonOf(surface, '提交'))
+    await untilCard(surface, '已提交')
+    assert.equal(context.host.answers[0]?.callId, 'c8')
   } finally {
     await context.stop()
   }
+})
+
+test('stopping the bot hands every live waterfall back to the Host', async () => {
+  const { surface, host, sessionId, stop } = await questionHarness()
+  const outcome = host.invoke('user-questions/request', requestFor(sessionId), async () => 'downstream')
+  await untilCard(surface, '用哪个数据库？')
+  await stop()
+  assert.equal(await outcome, 'downstream')
 })
 
 test('/cwd starts a new session even when that directory already has one', async () => {
@@ -544,39 +949,30 @@ test('the pinned status says whether the turn is running', async () => {
   }
 })
 
-test('one approval reaches both surfaces and one answer closes both', async () => {
+test('an approval is rendered only on the conversation mounted to its Session', async () => {
   const surface = new FakeSurface()
   const context = await harness({}, surface)
   try {
     await surface.whenStarted()
-    await surface.emit({
-      kind: 'message',
-      chat: { channel: 'lark', chatId: 'oc_1' },
-      userId: 'ou_1',
-      text: '跑一下',
-      fromBot: false,
-      messageId: 'om_1',
-    })
     context.telegram.push(messageUpdate(1, 10, 1, '跑一下'))
-    await context.telegram.until(() => context.host.prompts.length === 2)
+    await context.telegram.until(() => context.host.followRequests.length === 1)
 
-    const outcome = context.host.invoke('approval/request', { toolName: 'bash', reason: 'rm -rf /tmp/x' })
-    await context.telegram.until(() => surface.sent.some(message => message.keyboard !== undefined))
-    await context.telegram.until(() => context.telegram.of('sendMessage').some(call => call.body.reply_markup !== undefined))
-
-    const card = surface.sent.find(message => message.keyboard !== undefined) as { messageId: string; keyboard: NonNullable<SurfaceMessage['keyboard']> }
-    const data = card.keyboard[0]?.[0]?.data ?? ''
-    assert.match(data, /^approve:a\d+$/)
-    await surface.emit({
-      kind: 'callback',
-      chat: { channel: 'lark', chatId: 'oc_1' },
-      userId: 'ou_1',
-      callbackId: 'om_1',
-      messageId: card.messageId,
-      data,
+    const outcome = context.host.invoke('approval/request', {
+      toolName: 'bash',
+      reason: 'rm -rf /tmp/x',
+      agent: { session: { id: 's1' } },
     })
+    await context.telegram.until(() => context.telegram.of('sendMessage').some(call => call.body.reply_markup !== undefined))
+    const card = context.telegram.of('sendMessage').find(call => call.body.reply_markup !== undefined)
+    const keyboard = (card?.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard
+    const data = keyboard[0]?.[0]?.callback_data ?? ''
+    assert.match(data, /^approve:a\d+$/)
+    // The other channel is live but has no mount for s1: a permission request
+    // for one Session must not be broadcast to unrelated conversations.
+    assert.equal(surface.sent.filter(message => message.keyboard !== undefined).length, 0)
+
+    context.telegram.push(callbackUpdate(2, 10, 1, Number(card?.body.chat_id ?? 0), data))
     assert.equal(await outcome, 'allowed-once')
-    await context.telegram.until(() => surface.edits.some(edit => edit.text.includes('已允许')))
     await context.telegram.until(() => context.telegram.texts(10).some(text => text.includes('已允许')))
   } finally {
     await context.stop()

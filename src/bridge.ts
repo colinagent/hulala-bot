@@ -16,9 +16,9 @@ import { randomUUID } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import type { SessionFollowFrame, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/types'
-import type { Channel, ChatKey, InboundCallback, InboundEvent, InboundMessage } from './channel.ts'
+import type { Button, Channel, ChatKey, InboundCallback, InboundEvent, InboundMessage, Keyboard } from './channel.ts'
 import { expandHome, type BridgeConfig } from './config.ts'
-import type { HostBackend } from './host/backend.ts'
+import type { HostBackend, QuestionAnswerBatch, QuestionAnswerItem } from './host/backend.ts'
 import { TurnTracker } from './host/turn.ts'
 import { Log } from './log.ts'
 import { mediaTypeOf, takeImageLinks, type ImageLink } from './render/images.ts'
@@ -50,13 +50,51 @@ interface ApprovalRequest {
   readonly agent?: AgentFacts
 }
 
-/** Question request as delivered to a bot; the bot only announces it. */
+/** One caller-authored sentence: `en` plus whatever locales the caller wrote. */
+interface LocalizedText {
+  readonly en: string
+  readonly [locale: string]: string
+}
+
+/**
+ * A caller-declared presentation intent (DSH `AskUserQuestionIntent`).
+ *
+ * It changes how the card reads, never how it is answered: the Harness answer
+ * encoding is identical. `approval` is a Computer-Use agent asking for a
+ * permission, so the subject and the caller's own wording carry the meaning.
+ */
+interface QuestionIntent {
+  readonly kind: 'plan-review' | 'approval'
+  readonly approve: string
+  readonly reject?: string
+  readonly always?: string
+  readonly subject?: { readonly name: string }
+  readonly display?: {
+    readonly question?: LocalizedText
+    readonly detail?: LocalizedText
+    readonly approve?: LocalizedText
+  }
+}
+
+/** One question item as the Host delivers it. */
+interface QuestionItem {
+  readonly id?: string
+  readonly question: string
+  readonly detail?: string
+  readonly header?: string
+  readonly multiSelect?: boolean
+  readonly options?: readonly { readonly label: string; readonly description?: string }[]
+  readonly intent?: QuestionIntent
+}
+
+/** Question request as delivered to a bot; the bot announces it and hands it on. */
 interface QuestionRequest {
-  readonly questions: readonly {
-    readonly question: string
-    readonly header?: string
-    readonly options?: readonly { readonly label: string; readonly description?: string }[]
-  }[]
+  readonly questions: readonly QuestionItem[]
+  readonly signal?: AbortSignal
+  readonly wait?: {
+    readonly callId: string
+    readonly timed?: boolean
+  }
   readonly agent?: AgentFacts
 }
 
@@ -81,6 +119,60 @@ interface Pending {
   readonly cards: { chat: ChatKey; messageId: string }[]
   settled: boolean
   readonly resolve: (decision: Decision) => void
+}
+
+/** Rejection codes DSH's wire preserves across the answerer waterfall. */
+type QuestionRejectionCode = 'ASK_ABORTED' | 'ASK_CANCELLED' | 'ASK_TIMED_OUT'
+
+/** One question's draft while a card is being answered. */
+interface QuestionDraft {
+  selected: string[]
+  custom?: string | undefined
+}
+
+/** One live Host waterfall a card can settle, reject, or hand to the next answerer. */
+interface QuestionWaterfall {
+  readonly result: Promise<QuestionAnswerBatch>
+  resolve(answer: QuestionAnswerBatch): void
+  reject(code: QuestionRejectionCode): void
+  delegate(): void
+  isDelegation(reason: unknown): boolean
+}
+
+/** One row of the `userQuestions` Session projection. */
+interface ProjectedQuestion {
+  readonly callId: string
+  readonly questions: readonly QuestionItem[]
+  readonly state: 'open' | 'continued'
+}
+
+/**
+ * One answerable card, shared by the forwarded waterfall and the Session
+ * projection. `key` is DSH's own `question:<sessionId>:<callId>` identity;
+ * `token` is the short id the chat buttons carry. A card outlives its seat:
+ * hiding it withdraws the buttons, the projection decides when it is gone.
+ */
+interface QuestionCard {
+  readonly key: string
+  readonly token: string
+  readonly sessionId: string
+  readonly callId: string | undefined
+  readonly questions: readonly QuestionItem[]
+  readonly chats: readonly ChatKey[]
+  readonly messages: { chat: ChatKey; messageId: string }[]
+  readonly drafts: QuestionDraft[]
+  index: number
+  state: 'open' | 'continued'
+  answerable: boolean
+  hidden: boolean
+  settled: boolean
+  status: string
+  deadline?: number | undefined
+  timer?: ReturnType<typeof setTimeout> | undefined
+  ticker?: ReturnType<typeof setInterval> | undefined
+  claim?: AbortController | undefined
+  waterfall?: QuestionWaterfall | undefined
+  awaitingCustom?: { chat: ChatKey; question: number } | undefined
 }
 
 /** Largest file the bot attaches as an image. */
@@ -108,6 +200,289 @@ function whenAborted(signal: AbortSignal | undefined, run: () => void): () => vo
   return () => { signal.removeEventListener('abort', listener) }
 }
 
+/** Keep a countdown timer from holding the process open after a test or shutdown. */
+function unref(timer: ReturnType<typeof setTimeout>): void {
+  (timer as unknown as { unref?: () => void }).unref?.()
+}
+
+/** True for a plain object, the only shape a projection value may be read from. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * The one sentence a caller wrote in a locale this bot can show.
+ *
+ * The bot speaks Chinese, so `zh` wins and English is the fallback a caller
+ * that wrote no Chinese gets; a locale key is never shown to a user.
+ * @param text - the caller's localized text, if it wrote one.
+ * @returns the sentence to render, or undefined when there is none.
+ */
+function localized(text: LocalizedText | undefined): string | undefined {
+  if (text === undefined) return undefined
+  return text.zh ?? text['zh-CN'] ?? text.en
+}
+
+/** A question id is part of the answer encoding; a caller that omitted one gets a stable local id. */
+function questionId(question: QuestionItem, index: number): string {
+  return typeof question.id === 'string' && question.id !== '' ? question.id : `q${String(index)}`
+}
+
+/** A wire-preserved user-question rejection, the same shape DSH's clients throw. */
+function questionError(code: QuestionRejectionCode): Error {
+  const messages: Record<QuestionRejectionCode, string> = {
+    ASK_ABORTED: 'ask_user_question was aborted before the user answered',
+    ASK_CANCELLED: 'the user cancelled ask_user_question',
+    ASK_TIMED_OUT: 'ask_user_question timed out before the user answered',
+  }
+  const error = new Error(messages[code]) as Error & { code: string }
+  error.name = 'UserQuestionError'
+  error.code = code
+  return error
+}
+
+/** One deferred waterfall request, settled through a card instead of `next()`. */
+function createWaterfall(signal: AbortSignal | undefined): QuestionWaterfall {
+  let resolveResult: ((answer: QuestionAnswerBatch) => void) | undefined
+  let rejectResult: ((reason: unknown) => void) | undefined
+  const result = new Promise<QuestionAnswerBatch>((resolve, reject) => {
+    resolveResult = resolve
+    rejectResult = reject
+  })
+  const delegated = Symbol('question delegated')
+  let settled = false
+  const onAbort = (): void => { finish(() => { rejectResult?.(questionError('ASK_ABORTED')) }) }
+  const finish = (settle: () => void): void => {
+    if (settled) return
+    settled = true
+    signal?.removeEventListener('abort', onAbort)
+    settle()
+  }
+  const channel: QuestionWaterfall = {
+    result,
+    resolve: answer => { finish(() => { resolveResult?.(answer) }) },
+    reject: code => { finish(() => { rejectResult?.(questionError(code)) }) },
+    delegate: () => { finish(() => { rejectResult?.(delegated) }) },
+    isDelegation: reason => reason === delegated,
+  }
+  if (signal !== undefined) {
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  }
+  return channel
+}
+
+/**
+ * Read the `userQuestions` projection view. Only well-formed rows with at
+ * least one question are answerable, so a malformed wire value is ignored
+ * instead of producing a card nobody can submit.
+ */
+function projectedQuestions(value: unknown): readonly ProjectedQuestion[] {
+  if (!isRecord(value) || !Array.isArray(value.active)) return []
+  return value.active.flatMap((row: unknown): ProjectedQuestion[] => {
+    if (!isRecord(row) || typeof row.callId !== 'string' || !Array.isArray(row.questions)) return []
+    const questions = questionItems(row.questions)
+    if (questions.length === 0) return []
+    return [{
+      callId: row.callId,
+      questions,
+      state: row.state === 'continued' ? 'continued' : 'open',
+    }]
+  })
+}
+
+/** One caller-authored localized sentence: `en` is the required fallback. */
+function localizedText(value: unknown): LocalizedText | undefined {
+  if (!isRecord(value) || typeof value.en !== 'string') return undefined
+  const locales: Record<string, string> = { en: value.en }
+  for (const [key, entry] of Object.entries(value)) {
+    if (key !== 'en' && typeof entry === 'string') locales[key] = entry
+  }
+  // `en` was checked above; the index signature covers the other locales.
+  return locales as LocalizedText
+}
+
+/** Narrow a caller-declared intent; unknown fields are caller-owned protocol. */
+function questionIntent(value: unknown): QuestionIntent | undefined {
+  // `AskUserQuestionIntent` requires `approve` for both kinds and `reject` for
+  // `approval`. A row that omits them is malformed; rendering it as an
+  // approval card would show actions that cannot be submitted.
+  if (!isRecord(value) || (value.kind !== 'plan-review' && value.kind !== 'approval')) return undefined
+  if (typeof value.approve !== 'string' || value.approve === '') return undefined
+  if (value.kind === 'approval' && typeof value.reject !== 'string') return undefined
+  const display = isRecord(value.display) ? value.display : undefined
+  const displayCopy: { question?: LocalizedText; detail?: LocalizedText; approve?: LocalizedText } = {}
+  if (display !== undefined) {
+    for (const key of ['question', 'detail', 'approve'] as const) {
+      const text = localizedText(display[key])
+      if (text !== undefined) displayCopy[key] = text
+    }
+  }
+  const subject = isRecord(value.subject) && typeof value.subject.name === 'string'
+    ? { name: value.subject.name }
+    : undefined
+  return {
+    kind: value.kind,
+    approve: value.approve,
+    ...(typeof value.reject === 'string' ? { reject: value.reject } : {}),
+    ...(typeof value.always === 'string' ? { always: value.always } : {}),
+    ...(subject === undefined ? {} : { subject }),
+    ...(Object.keys(displayCopy).length === 0 ? {} : { display: displayCopy }),
+  }
+}
+
+/** Read one projection row's question batch, dropping fields of the wrong type. */
+function questionItems(value: readonly unknown[]): QuestionItem[] {
+  return value.flatMap((raw: unknown): QuestionItem[] => {
+    if (!isRecord(raw) || typeof raw.question !== 'string') return []
+    const options = Array.isArray(raw.options)
+      ? raw.options.flatMap((option: unknown) => {
+        if (!isRecord(option) || typeof option.label !== 'string') return []
+        return [{ label: option.label, ...(typeof option.description === 'string' ? { description: option.description } : {}) }]
+      })
+      : undefined
+    const intent = questionIntent(raw.intent)
+    return [{
+      ...(typeof raw.id === 'string' ? { id: raw.id } : {}),
+      question: raw.question,
+      ...(typeof raw.detail === 'string' ? { detail: raw.detail } : {}),
+      ...(typeof raw.header === 'string' ? { header: raw.header } : {}),
+      ...(options === undefined ? {} : { options }),
+      ...(raw.multiSelect === true ? { multiSelect: true } : {}),
+      ...(intent === undefined ? {} : { intent }),
+    }]
+  })
+}
+
+/** Call ids whose `user-question-reply` is already queued in the inbox projection. */
+function queuedReplies(value: unknown): readonly string[] {
+  if (!isRecord(value)) return []
+  const calls: string[] = []
+  for (const list of [value['next-step'], value['next-turn']]) {
+    if (!Array.isArray(list)) continue
+    for (const message of list) {
+      if (!isRecord(message) || !isRecord(message.source)) continue
+      const source = message.source
+      if (source.kind === 'user-question-reply' && typeof source.callId === 'string') calls.push(source.callId)
+    }
+  }
+  return calls
+}
+
+/**
+ * One question card's body, including the draft so a button press is visible
+ * on the message itself and not only in the next keyboard.
+ *
+ * A caller-declared `approval` intent is a Computer-Use permission request, so
+ * it reads as one: who is asking, what they ask in their own words, and the
+ * three actions the caller named. Every other question is the generic list.
+ */
+function questionBody(card: QuestionCard): string {
+  return card.questions.map((question, index) => {
+    const draft = card.drafts[index]
+    const chosen = (label: string): string => draft?.selected.includes(label) === true ? '✓' : '·'
+    if (question.intent?.kind === 'approval') {
+      const intent = question.intent
+      const approveText = localized(intent.display?.approve)
+      const action = (mark: string, label: string | undefined, shown = label): string[] =>
+        label === undefined || label === '' ? [] : [`  ${chosen(label)} ${mark} ${shown}`]
+      return [
+        `🛡 需要授权${intent.subject === undefined ? '' : ` · ${intent.subject.name}`}`,
+        localized(intent.display?.question) ?? question.question,
+        localized(intent.display?.detail) ?? question.detail ?? '',
+        ...action('✓', intent.approve, approveText ?? intent.approve),
+        ...action('✕', intent.reject),
+        ...action('∞', intent.always),
+      ].filter(line => line !== '').join('\n')
+    }
+    const head = `❓ ${question.header === undefined ? '' : `[${question.header}] `}${question.question}`
+    const detail = question.detail === undefined || question.detail === '' ? [] : [question.detail]
+    const options = (question.options ?? []).map(option =>
+      `  ${chosen(option.label)} ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`)
+    const multi = question.multiSelect === true ? ['  （可多选）'] : []
+    const typed = draft?.custom === undefined ? [] : [`  ✎ ${draft.custom}`]
+    return [head, ...detail, ...options, ...typed, ...multi].join('\n')
+  }).join('\n\n')
+}
+
+/** The whole message a card shows: body plus the one line that says what it is doing. */
+function questionText(card: QuestionCard): string {
+  const notes: string[] = []
+  if (card.questions.length > 1) notes.push(`第 ${String(card.index + 1)}/${String(card.questions.length)} 题`)
+  if (card.deadline !== undefined) {
+    notes.push(`⏳ 还剩 ${String(Math.max(0, Math.ceil((card.deadline - Date.now()) / 1000)))} 秒`)
+  }
+  if (card.state === 'continued') notes.push('窗口已关闭，补答会在下一轮进入 agent')
+  if (card.awaitingCustom !== undefined) notes.push('请直接发一段文字作为自定义答案，或按「取消自定义」')
+  if (card.status !== '') notes.push(card.status)
+  return notes.length === 0 ? questionBody(card) : `${questionBody(card)}\n\n${notes.join(' · ')}`
+}
+
+/** Build the complete answer batch, or say which questions are still unanswered. */
+function batchOf(card: QuestionCard): QuestionAnswerBatch | undefined {
+  const answers: QuestionAnswerItem[] = []
+  for (const [index, question] of card.questions.entries()) {
+    const draft = card.drafts[index]
+    if (draft === undefined || (draft.selected.length === 0 && draft.custom === undefined)) return undefined
+    answers.push({
+      id: questionId(question, index),
+      selected: [...draft.selected],
+      ...(draft.custom === undefined ? {} : { custom: draft.custom }),
+    })
+  }
+  return { answers }
+}
+
+/**
+ * Translate DSH's question flow into the buttons a chat surface can carry.
+ *
+ * One press picks an option; multi-select toggles. A batch with several
+ * questions moves between them with the navigation row, and `自定义` is the
+ * chat-surface stand-in for the Web composer's free-text input: the next
+ * message in that conversation becomes the answer. An `approval` intent has
+ * three fixed actions and one press decides, because it has no free text.
+ */
+function questionKeyboard(card: QuestionCard): Keyboard {
+  if (card.settled || card.hidden || (card.waterfall === undefined && !card.answerable)) return []
+  const question = card.questions[card.index]
+  if (question === undefined) return []
+  const token = card.token
+  const draft = card.drafts[card.index]
+  const rows: Button[][] = []
+  for (const [index, option] of (question.options ?? []).entries()) {
+    const picked = draft?.selected.includes(option.label) === true
+    const mark = question.intent?.kind === 'approval'
+      ? option.label === question.intent.approve ? '✓ '
+        : option.label === question.intent.reject ? '✕ '
+          : option.label === question.intent.always ? '∞ ' : ''
+      : ''
+    rows.push([{ text: `${picked ? '● ' : ''}${mark}${option.label}`, data: `qopt:${token}:${String(card.index)}:${String(index)}` }])
+  }
+  if (question.intent?.kind === 'approval') {
+    rows.push([{ text: '交给他端', data: `delegate:${token}` }])
+    return rows
+  }
+  const customRow: Button[] = [{
+    text: draft?.custom === undefined ? '✎ 自定义答案' : '✎ 修改自定义答案',
+    data: `qcustom:${token}:${String(card.index)}`,
+  }]
+  if (card.awaitingCustom !== undefined) customRow.push({ text: '取消自定义', data: `qcancel:${token}` })
+  rows.push(customRow)
+  if (card.questions.length > 1) {
+    const previous = (card.index - 1 + card.questions.length) % card.questions.length
+    const next = (card.index + 1) % card.questions.length
+    rows.push([
+      { text: '← 上一题', data: `qnav:${token}:${String(previous)}` },
+      { text: '下一题 →', data: `qnav:${token}:${String(next)}` },
+    ])
+  }
+  rows.push([
+    { text: '✓ 提交', data: `qsubmit:${token}` },
+    { text: '交给他端', data: `delegate:${token}` },
+  ])
+  return rows
+}
+
 /** Injectable host attach, so tests can supply a fake Host. */
 export type HostConnect = () => Promise<HostBackend>
 
@@ -129,9 +504,14 @@ export class Bridge {
   readonly #connect: HostConnect
   readonly #mounts = new Map<string, Mount>()
   readonly #pending = new Map<string, Pending>()
+  /** Cards keyed by their short chat token; one card per `(sessionId, callId)`. */
+  readonly #cards = new Map<string, QuestionCard>()
+  /** Last `userQuestions` / `inbox` projection values seen per Session. */
+  readonly #projections = new Map<string, { questions: readonly ProjectedQuestion[] | undefined; queued: ReadonlySet<string> }>()
   readonly #recent = new Map<string, readonly string[]>()
   readonly #cwdChoices = new Map<string, readonly string[]>()
   readonly #stopped = new AbortController()
+  #controlAbort: AbortController | undefined
   #backend: HostBackend | undefined
   #connecting: Promise<HostBackend> | undefined
   #sequence = 0
@@ -166,11 +546,16 @@ export class Bridge {
   /** Stop every channel, abort follows, and close the Host connection. */
   async stop(): Promise<void> {
     this.#stopped.abort()
+    this.#controlAbort?.abort()
+    this.#controlAbort = undefined
     for (const mount of this.#mounts.values()) {
       mount.abort.abort()
       mount.reply?.dispose()
     }
     this.#mounts.clear()
+    // A live waterfall that is never handed back would leave the Host waiting
+    // for an answer from a client that has already gone away.
+    this.#disposeQuestions('⌛️ 机器人已停止')
     await this.#bindings.flush().catch(() => undefined)
     const backend = this.#backend
     this.#backend = undefined
@@ -194,6 +579,20 @@ export class Bridge {
     const command = parseCommand(event.text)
     if (command !== undefined) {
       await this.#command(event, command.name, command.args)
+      return
+    }
+    // `自定义` has no inline text input on a chat surface: the next message in
+    // that conversation is the answer, never a prompt for the agent.
+    const card = [...this.#cards.values()].find(candidate =>
+      candidate.awaitingCustom !== undefined && keyOf(candidate.awaitingCustom.chat) === keyOf(event.chat))
+    if (card !== undefined && card.awaitingCustom !== undefined && event.text.trim() !== '') {
+      const draft = card.drafts[card.awaitingCustom.question]
+      if (draft !== undefined) {
+        draft.custom = event.text.trim()
+        draft.selected = []
+      }
+      card.awaitingCustom = undefined
+      await this.#publishCard(card)
       return
     }
     await this.#prompt(event)
@@ -223,8 +622,84 @@ export class Bridge {
     }
     events.$on('approval/request', (request, next) => this.#onApproval(request as ApprovalRequest, next as () => Promise<ApprovalOutcome>))
     events.$on('user-questions/request', (request, next) => this.#onQuestion(request as QuestionRequest, next))
+    // DSH's own client contract: one Host-wide baseline, then one frame per
+    // committed event that changed `userQuestions` or `inbox`. The Web client
+    // reads the same projections; only the presentation is different here.
+    const abort = new AbortController()
+    this.#controlAbort = abort
+    void this.#control(backend, abort.signal)
     await this.#restore()
     return backend
+  }
+
+  /**
+   * Consume the Host's projection control stream.
+   *
+   * The baseline is a complete cut over every Session, so a continued question
+   * that outlived a reconnect can still be answered. Change frames carry only
+   * the keys one event changed; anything omitted keeps its last value.
+   */
+  async #control(backend: HostBackend, signal: AbortSignal): Promise<void> {
+    try {
+      for await (const frame of backend.ctx.remote.session.control(signal)) {
+        if (signal.aborted) return
+        if (frame.type === 'baseline') {
+          for (const [sessionId, baseline] of Object.entries(frame.value.projections)) {
+            this.#applyProjections(sessionId, baseline.values as Record<string, unknown>)
+          }
+          continue
+        }
+        const values: Record<string, unknown> = {}
+        for (const change of frame.changes) values[change.key] = change.val
+        this.#applyProjections(frame.sessionId as string, values)
+      }
+    } catch (error) {
+      if (!signal.aborted) this.#log.error(`projection control failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /** Merge one projection read into the per-Session cache, then reconcile its cards. */
+  #applyProjections(sessionId: string, values: Record<string, unknown>): void {
+    const previous = this.#projections.get(sessionId)
+    const questions = 'userQuestions' in values
+      ? projectedQuestions(values.userQuestions)
+      : previous?.questions
+    const queued = 'inbox' in values
+      ? new Set(queuedReplies(values.inbox))
+      : previous?.queued ?? new Set<string>()
+    this.#projections.set(sessionId, { questions, queued })
+    this.#reconcile(sessionId)
+  }
+
+  /**
+   * Mirror the projection onto cards, the way DSH's
+   * `publishContinuedQuestions()` does: `continued` rows get an answerable
+   * card, `open` rows only change its state, and a call that is no longer
+   * listed (or has a reply queued in the inbox) loses its card. A card with
+   * a live waterfall is never removed by a projection frame.
+   */
+  #reconcile(sessionId: string): void {
+    const view = this.#projections.get(sessionId)
+    if (view?.questions === undefined) return
+    const watchers = [...this.#mounts.values()].filter(mount => mount.sessionId === sessionId)
+    if (watchers.length === 0) return
+    const answerable = view.questions.filter(row => row.state === 'continued' && !view.queued.has(row.callId))
+    for (const row of answerable) {
+      const existing = this.#cardByCall(sessionId, row.callId)
+      const card = existing ?? this.#ensureCard(sessionId, row.questions, row.callId, watchers)
+      const changed = card.state !== 'continued' || card.hidden || !card.answerable
+      card.state = 'continued'
+      card.answerable = true
+      card.hidden = false
+      card.status = '选择后按「提交」，答案会在下一轮进入 agent'
+      if (changed) void this.#publishCard(card)
+    }
+    const live = new Set(view.questions.filter(row => !view.queued.has(row.callId)).map(row => row.callId))
+    for (const card of [...this.#cards.values()]) {
+      if (card.sessionId !== sessionId || card.settled || card.callId === undefined) continue
+      if (live.has(card.callId) || card.waterfall !== undefined) continue
+      void this.#removeCard(card, '☑️ 这条问题已结算')
+    }
   }
 
   /** Drop a dead connection so the next call re-attaches. */
@@ -233,10 +708,22 @@ export class Bridge {
     if (backend === undefined) return
     this.#log.error(`host connection lost: ${reason}`)
     this.#backend = undefined
+    this.#controlAbort?.abort()
+    this.#controlAbort = undefined
     for (const key of [...this.#pending.keys()]) this.#settle(key, 'cancelled', '')
+    this.#disposeQuestions('⌛️ 主机连接已断开')
+    this.#projections.clear()
     for (const mount of this.#mounts.values()) mount.abort.abort()
     this.#mounts.clear()
     await backend?.close().catch(() => undefined)
+  }
+
+  /** Hand every live waterfall back and withdraw every card at teardown. */
+  #disposeQuestions(status: string): void {
+    for (const card of [...this.#cards.values()]) {
+      card.waterfall?.delegate()
+      void this.#removeCard(card, status)
+    }
   }
 
   /** Re-follow every persisted mount. */
@@ -626,6 +1113,9 @@ export class Bridge {
     })
     this.#bindings.set(chat, sessionId)
     await this.#bindings.flush().catch(() => undefined)
+    // A projection baseline may already have been read before this chat
+    // mounted: the Web client re-reconciles on a session list change too.
+    this.#reconcile(sessionId)
     void this.#follow(this.#mounts.get(keyOf(chat)) as Mount)
     void this.#syncStatus(chat)
   }
@@ -738,11 +1228,28 @@ export class Bridge {
     }
   }
 
-  /** Render one approval as buttons on every watching conversation. */
+  /**
+   * Answer one approval on the conversations mounted to the Session that
+   * asked, and delegate every other request.
+   *
+   * `approval/request` is an Agent-scoped Host waterfall: an answerer may
+   * return an outcome only for an Agent it owns. Broadcasting a card to
+   * whichever chat has a turn in flight attributes one Session's permission
+   * request to an unrelated Session, and claiming it short-circuits the client
+   * answerer that actually owns the turn.
+   */
   async #onApproval(request: ApprovalRequest, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome> {
-    const running = [...this.#mounts.values()].filter(mount => mount.active)
-    const watchers = running.length > 0 ? running : [...this.#mounts.values()]
-    if (watchers.length === 0) return await next()
+    const sessionId = request.agent?.session?.id
+    if (sessionId === undefined) {
+      this.#log.info('approval delegated: the request names no Session')
+      return await next()
+    }
+    const watchers = [...this.#mounts.values()].filter(mount => mount.sessionId === sessionId)
+    if (watchers.length === 0) {
+      this.#log.info(`approval delegated: ${sessionId} has no mounted conversation`)
+      return await next()
+    }
+    this.#log.info(`approval for ${sessionId} on ${String(watchers.length)} mounted conversation(s)`)
 
     this.#sequence += 1
     const key = `a${String(this.#sequence)}`
@@ -846,31 +1353,389 @@ export class Bridge {
   }
 
   /**
-   * Announce a question, but only on the conversation that is looking at the
-   * Session that asked it.
+   * Answer one question on the conversations mounted to the Session that
+   * asked it, and delegate every other request.
    *
-   * `user-questions/request` is a Host-wide waterfall: every Agent's question
-   * arrives here, including the ones a turn started from the TUI raises. A
-   * question may only be answered where the turn is visible, so announcing it in
-   * an unrelated conversation is noise the phone cannot act on.
+   * This is the same answerer shape as DSH's `SdkUserQuestionBridge`: an
+   * `ownsAgent` predicate (here, "a mounted conversation watches this
+   * Session"), then a promise the answerer settles with a structured
+   * `AskUserQuestionAnswer` instead of calling `next()`. `next()` is reserved
+   * for an explicit hand-on, which is what DSH's `QuestionWaterfallChannel`
+   * calls delegation.
+   *
+   * The card is keyed by `(sessionId, callId)` and shared with the projection:
+   * a timed request that reaches its deadline keeps its card, and the
+   * `continued` row later gives it the `userQuestions.answer` path. A
+   * blocking request has no call id, so its card ends with the waterfall.
    */
   async #onQuestion(request: QuestionRequest, next: () => Promise<unknown>): Promise<unknown> {
     const sessionId = request.agent?.session?.id
-    // A question only exists inside a running turn, so an unnamed Agent falls
-    // back to the conversations with a turn in flight, exactly as approvals do.
-    const watchers = [...this.#mounts.values()].filter(mount =>
-      sessionId === undefined ? mount.active : mount.sessionId === sessionId)
-    if (watchers.length === 0) return await next()
-    const lines = request.questions.map(question => {
-      const head = `❓ ${question.question}`
-      const options = question.options ?? []
-      if (options.length === 0) return head
-      return [head, ...options.map(option => `  · ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`)].join('\n')
-    })
-    for (const mount of watchers) {
-      await this.#say(mount.key, [...lines, '', '请在这台机器的 TUI 或 Desktop 上回答。'].join('\n'))
+    if (sessionId === undefined) {
+      this.#log.info('question delegated: the request names no Session')
+      return await next()
     }
-    return await next()
+    const watchers = [...this.#mounts.values()].filter(mount => mount.sessionId === sessionId)
+    if (watchers.length === 0) {
+      this.#log.info(`question delegated: ${sessionId} has no mounted conversation`)
+      return await next()
+    }
+    const callId = request.wait?.callId
+    const card = this.#cardByCall(sessionId, callId)
+      ?? this.#ensureCard(sessionId, request.questions, callId, watchers)
+    this.#log.info(`question ${card.key} for ${sessionId} on ${String(watchers.length)} mounted conversation(s)`)
+    card.hidden = false
+    card.status = ''
+    const channel = createWaterfall(request.signal)
+    card.waterfall = channel
+    try {
+      try {
+        await this.#publishCard(card)
+      } catch (error) {
+        this.#log.error(`question card failed: ${String(error)}`)
+      }
+      if (card.messages.length === 0) {
+        // No surface could show a card: there is nobody to answer it here.
+        card.settled = true
+        this.#cards.delete(card.token)
+        return await next()
+      }
+
+      // A claim suspends the Host's own timer, so the client that holds it
+      // owns the countdown and must reject with ASK_TIMED_OUT at the
+      // deadline: `TimedQuestionWait.attach()` + `createWaterfallRequest()`.
+      let claimEnded: Promise<QuestionAnswerBatch> | undefined
+      let noWindow = false
+      const claim = new AbortController()
+      const userQuestions = this.#backend?.ctx.remote.userQuestions
+      if (request.wait?.timed === true && callId !== undefined && userQuestions !== undefined) {
+        const signal = request.signal === undefined
+          ? claim.signal
+          : AbortSignal.any([claim.signal, request.signal])
+        try {
+          const iterator = userQuestions.attachWait(request.agent, callId, signal)[Symbol.asyncIterator]()
+          card.claim = claim
+          const opening = await iterator.next()
+          if (opening.done === true) {
+            noWindow = true
+          } else {
+            this.#armCountdown(card, channel, Math.max(0, opening.value.remainingMs))
+            // The first publish happened before the claim reported its
+            // remaining window; repaint so the card shows the countdown.
+            await this.#publishCard(card)
+            claimEnded = (async (): Promise<QuestionAnswerBatch> => {
+              await iterator.next()
+              throw questionError('ASK_TIMED_OUT')
+            })()
+          }
+        } catch (error) {
+          this.#log.info(`question wait not attached: ${error instanceof Error ? error.message : String(error)}`)
+          this.#disposeClaim(card)
+        }
+      }
+      if (noWindow) {
+        // The wait is already over; there is no foreground window to answer in.
+        this.#disposeClaim(card)
+        await this.#hideCard(card, '⌛️ 回答窗口已关闭')
+        return await next()
+      }
+      try {
+        return await (claimEnded === undefined
+          ? channel.result
+          : Promise.race([channel.result, claimEnded]))
+      } catch (error) {
+        if (!channel.isDelegation(error)) throw error
+        // Delegation releases the claim before `next()`, so the Host's clock
+        // is never left suspended by a client that has stepped aside.
+        this.#disposeClaim(card)
+        try {
+          return await next()
+        } catch (downstream) {
+          // A blocking request that nobody took has no projection row that
+          // could bring its card back. A timed one does: it becomes
+          // `continued`, so its card stays for the late-answer path.
+          if (request.wait?.timed !== true) {
+            await this.#removeCard(card, '⌛️ 没有其他端接手这条问题')
+          }
+          throw downstream
+        }
+      }
+    } finally {
+      card.waterfall = undefined
+      this.#disposeClaim(card)
+      if (!card.settled) {
+        if (callId === undefined) {
+          await this.#removeCard(card, card.status === '' ? '☑️ 这条问题已结束' : card.status)
+        } else {
+          if (card.status === '') {
+            card.status = card.state === 'continued'
+              ? '选择后按「提交」，答案会在下一轮进入 agent'
+              : '⌛️ 回答窗口已关闭，等待会话投影'
+          }
+          await this.#publishCard(card)
+        }
+      }
+    }
+  }
+
+  /** Find the one card DSH keyed a tool call by, if it is still answerable. */
+  #cardByCall(sessionId: string, callId: string | undefined): QuestionCard | undefined {
+    if (callId === undefined) return undefined
+    return [...this.#cards.values()].find(card =>
+      !card.settled && card.sessionId === sessionId && card.callId === callId)
+  }
+
+  /** Register and publish one card for a `(sessionId, callId)` pair. */
+  #ensureCard(
+    sessionId: string,
+    questions: readonly QuestionItem[],
+    callId: string | undefined,
+    watchers: readonly Mount[],
+  ): QuestionCard {
+    this.#sequence += 1
+    const token = `q${String(this.#sequence)}`
+    const card: QuestionCard = {
+      key: `question:${sessionId}:${callId ?? token}`,
+      token,
+      sessionId,
+      callId,
+      questions,
+      chats: watchers.map(mount => mount.key),
+      messages: [],
+      drafts: questions.map(() => ({ selected: [] })),
+      index: 0,
+      state: 'open',
+      answerable: false,
+      hidden: false,
+      settled: false,
+      status: '',
+    }
+    this.#cards.set(token, card)
+    return card
+  }
+
+  /** Send the card on every watching chat, or edit the copies already sent. */
+  async #publishCard(card: QuestionCard): Promise<void> {
+    if (card.settled) return
+    const text = questionText(card)
+    // A hidden card has withdrawn its seat. Only the projection can bring it
+    // back (as a `continued` row); a button on a card with no answer channel
+    // would be a trap.
+    const keyboard = card.hidden ? [] : questionKeyboard(card)
+    for (const chat of card.chats) {
+      try {
+        const channel = this.#channel(chat)
+        const sent = card.messages.find(message => keyOf(message.chat) === keyOf(chat))
+        if (sent === undefined) {
+          const messageId = await channel.send(chat, project(channel, text), { keyboard, preview: false })
+          if (messageId !== undefined) card.messages.push({ chat, messageId })
+        } else {
+          await channel.edit(chat, sent.messageId, project(channel, text), { keyboard, preview: false })
+        }
+      } catch (error) {
+        this.#log.error(`question card failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+
+  /** Replace every copy of one card with an exact text and keyboard. */
+  async #rewriteCard(card: QuestionCard, text: string, keyboard: Keyboard): Promise<void> {
+    for (const message of card.messages) {
+      try {
+        const channel = this.#channel(message.chat)
+        await channel.edit(message.chat, message.messageId, project(channel, text), { keyboard, preview: false })
+      } catch {
+        // A closed card is cosmetic; never let it break the question flow.
+      }
+    }
+  }
+
+  /** Withdraw a card's buttons but keep the request and its deadline standing. */
+  async #hideCard(card: QuestionCard, status: string): Promise<void> {
+    if (card.settled) return
+    card.hidden = true
+    card.status = status
+    card.awaitingCustom = undefined
+    await this.#publishCard(card)
+  }
+
+  /** End a card for good and drop every timer and claim it owned. */
+  async #removeCard(card: QuestionCard, status: string): Promise<void> {
+    if (card.settled) return
+    card.status = status
+    const text = questionText(card)
+    card.settled = true
+    card.hidden = false
+    this.#cards.delete(card.token)
+    this.#disposeClaim(card)
+    await this.#rewriteCard(card, text, [])
+  }
+
+  /** Give the foreground wait back to the Host and stop the local countdown. */
+  #disposeClaim(card: QuestionCard): void {
+    if (card.timer !== undefined) clearTimeout(card.timer)
+    card.timer = undefined
+    card.deadline = undefined
+    card.claim?.abort()
+    card.claim = undefined
+  }
+
+  /**
+   * Own the timed window: tick the card every few seconds and reject the
+   * waterfall with `ASK_TIMED_OUT` at the Host-computed deadline.
+   */
+  #armCountdown(card: QuestionCard, channel: QuestionWaterfall, remainingMs: number): void {
+    const deadline = Date.now() + remainingMs
+    card.deadline = deadline
+    let shown = -1
+    const tick = (): void => {
+      if (card.settled || card.waterfall !== channel) return
+      const left = Math.max(0, deadline - Date.now())
+      if (left <= 0) {
+        channel.reject('ASK_TIMED_OUT')
+        return
+      }
+      const bucket = Math.ceil(left / 5000)
+      if (bucket !== shown) {
+        shown = bucket
+        void this.#publishCard(card)
+      }
+      const timer = setTimeout(tick, Math.min(1000, left))
+      unref(timer)
+      card.timer = timer
+    }
+    const first = setTimeout(tick, Math.min(1000, remainingMs))
+    unref(first)
+    card.timer = first
+  }
+
+  /**
+   * Submit one complete answer batch through the card's live channel: the
+   * waterfall while the window is open, `userQuestions.answer` once the
+   * projection says the call is `continued`.
+   */
+  async #submitAnswer(callback: InboundCallback, card: QuestionCard): Promise<void> {
+    const channel = this.#channel(callback.chat)
+    const batch = batchOf(card)
+    if (batch === undefined) {
+      await channel.answer(callback, '每道题都要选一个选项或填写自定义答案').catch(() => undefined)
+      return
+    }
+    await channel.answer(callback).catch(() => undefined)
+    const waterfall = card.waterfall
+    if (waterfall !== undefined) {
+      card.status = '✅ 已在本端回答'
+      waterfall.resolve(batch)
+      return
+    }
+    if (!card.answerable || card.callId === undefined || this.#backend === undefined) {
+      await channel.answer(callback, '这条问题现在没有可提交的通道').catch(() => undefined)
+      return
+    }
+    const result = await this.#backend.ctx.remote.userQuestions.answer(card.sessionId, card.callId, batch)
+    if (!result.ok) {
+      const code = result.error.code
+      card.status = code === 'REPLY_QUEUED'
+        ? '☑️ 答案已在排队，无需重复提交'
+        : `⚠️ 提交失败：${result.error.message ?? code ?? 'Host request failed'}`
+      await this.#publishCard(card)
+      return
+    }
+    if (!result.value) {
+      card.status = '⌛️ 这条问题已经不可补答'
+      await this.#rewriteCard(card, questionText(card), [])
+      return
+    }
+    // `true` means the reply was steered into the inbox, not that the agent
+    // has read it. The projection closes the row when it admits the message.
+    card.status = '☑️ 已提交，等下一轮生效'
+    await this.#rewriteCard(card, questionText(card), [])
+  }
+
+  /** Handle one button press on a question card. */
+  async #onQuestionCallback(callback: InboundCallback, action: string, token: string, args: readonly string[]): Promise<void> {
+    const channel = this.#channel(callback.chat)
+    const card = this.#cards.get(token)
+    if (card === undefined || card.settled) {
+      await channel.answer(callback, '这条问题已经处理过了').catch(() => undefined)
+      await channel.edit(callback.chat, callback.messageId, project(channel, '☑️ 已处理'), { keyboard: [], preview: false })
+        .catch(() => undefined)
+      return
+    }
+    if (action === 'delegate') {
+      await channel.answer(callback).catch(() => undefined)
+      card.waterfall?.delegate()
+      // The request outlives this card: the `userQuestions` projection brings
+      // it back as a `continued` row once the window closes. DSH Web reveals
+      // hidden cards from the transcript row, which a chat surface has no
+      // equivalent of; promising a button here left a dead affordance.
+      await this.#hideCard(card, '☑️ 已交给其他端 · 窗口关闭后仍可补答')
+      return
+    }
+    if (action === 'qsubmit') {
+      await this.#submitAnswer(callback, card)
+      return
+    }
+    if (action === 'qnav') {
+      const index = Number.parseInt(args[0] ?? '', 10)
+      if (!Number.isInteger(index) || index < 0 || index >= card.questions.length) {
+        await channel.answer(callback, '这道题已经不在了').catch(() => undefined)
+        return
+      }
+      await channel.answer(callback).catch(() => undefined)
+      card.index = index
+      card.awaitingCustom = undefined
+      await this.#publishCard(card)
+      return
+    }
+    if (action === 'qcancel') {
+      await channel.answer(callback).catch(() => undefined)
+      card.awaitingCustom = undefined
+      await this.#publishCard(card)
+      return
+    }
+    if (action === 'qcustom') {
+      const index = Number.parseInt(args[0] ?? '', 10)
+      const question = card.questions[index]
+      if (question === undefined || question.intent?.kind === 'approval') {
+        await channel.answer(callback, '这道题不接受自定义答案').catch(() => undefined)
+        return
+      }
+      await channel.answer(callback).catch(() => undefined)
+      card.index = index
+      card.awaitingCustom = { chat: callback.chat, question: index }
+      await this.#publishCard(card)
+      return
+    }
+    if (action === 'qopt') {
+      const index = Number.parseInt(args[0] ?? '', 10)
+      const optionIndex = Number.parseInt(args[1] ?? '', 10)
+      const question = card.questions[index]
+      const option = question?.options?.[optionIndex]
+      const draft = card.drafts[index]
+      if (question === undefined || option === undefined || draft === undefined) {
+        await channel.answer(callback, '这个选项已经不在了').catch(() => undefined)
+        return
+      }
+      card.index = index
+      if (question.multiSelect === true) {
+        const at = draft.selected.indexOf(option.label)
+        if (at === -1) draft.selected.push(option.label)
+        else draft.selected.splice(at, 1)
+      } else {
+        draft.selected = [option.label]
+        draft.custom = undefined
+      }
+      // A caller-declared `approval` has three fixed actions and no free text;
+      // one press is the whole answer, exactly like the Web permission card.
+      if (question.intent?.kind === 'approval') {
+        await this.#submitAnswer(callback, card)
+        return
+      }
+      await channel.answer(callback).catch(() => undefined)
+      await this.#publishCard(card)
+      return
+    }
+    await channel.answer(callback, '这个按钮已经过期了').catch(() => undefined)
   }
 
   /** Handle one button press. */
@@ -880,10 +1745,13 @@ export class Bridge {
       return
     }
     const channel = this.#channel(callback.chat)
-    const separator = callback.data.indexOf(':')
-    const action = separator === -1 ? callback.data : callback.data.slice(0, separator)
-    const key = separator === -1 ? '' : callback.data.slice(separator + 1)
-    const pending = this.#pending.get(key)
+    const [action, key, ...args] = callback.data.split(':')
+    if (action !== undefined && key !== undefined
+      && ['delegate', 'qsubmit', 'qnav', 'qcancel', 'qcustom', 'qopt'].includes(action)) {
+      await this.#onQuestionCallback(callback, action, key, args)
+      return
+    }
+    const pending = this.#pending.get(key ?? '')
     if (pending === undefined || pending.settled) {
       await channel.answer(callback, '这条审批已经处理过了').catch(() => undefined)
       await channel.edit(callback.chat, callback.messageId, project(channel, '☑️ 已处理'), { keyboard: [], preview: false })
@@ -891,7 +1759,7 @@ export class Bridge {
       return
     }
     await channel.answer(callback).catch(() => undefined)
-    this.#settle(key, action === 'approve' ? 'allowed-once' : action === 'full' ? 'full-access' : 'rejected', '手机')
+    this.#settle(key ?? '', action === 'approve' ? 'allowed-once' : action === 'full' ? 'full-access' : 'rejected', '手机')
   }
 
   /** Handle one directory button. */

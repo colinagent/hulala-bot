@@ -7,6 +7,7 @@ import { createLocalRemote } from '../src/host/local-remote.ts'
 function fakeHost(options: {
   failList?: boolean
   onFollow?: (request: unknown, signal?: AbortSignal) => AsyncIterable<unknown>
+  onControl?: (signal: AbortSignal) => AsyncIterable<unknown>
 } = {}) {
   const seen: string[] = []
   const services = new Map<string, unknown>()
@@ -21,6 +22,7 @@ function fakeHost(options: {
       prompt: async (request: unknown) => ({ accepted: true, request }),
       cancel: (request: unknown) => ({ cancelled: true, request }),
       follow: (request: unknown, signal?: AbortSignal) => options.onFollow?.(request, signal) ?? (async function* () {})(),
+      control: (signal: AbortSignal) => options.onControl?.(signal) ?? (async function* () {})(),
     },
     workspaceController: {
       create: async (request: unknown) => ({ workspace: { workspaceId: 'w1' }, request }),
@@ -140,4 +142,57 @@ test('a Host without the schedule service reports it instead of throwing', async
   const result = await createLocalRemote(fakeHost().ctx).schedule.catalog()
   assert.equal(result.ok, false)
   assert.equal(result.ok === false && result.error.message, 'this Host composes no schedule service')
+})
+
+test('session.control delegates to the Host controller without a second transport', async () => {
+  const host = fakeHost({
+    onControl: async function* (signal) {
+      assert.equal(signal.aborted, false)
+      yield { type: 'baseline', value: { projections: {} } }
+    },
+  })
+  const frames: unknown[] = []
+  for await (const frame of createLocalRemote(host.ctx).session.control(new AbortController().signal)) frames.push(frame)
+  assert.deepEqual(frames, [{ type: 'baseline', value: { projections: {} } }])
+})
+
+test('userQuestions.answer resolves the exact live Agent and carries the batch through', async () => {
+  const host = fakeHost()
+  const seen: unknown[] = []
+  const agent = { id: 'agent-s1' }
+  host.services.set('agents', { get: (sessionId: string) => sessionId === 's1' ? agent : undefined })
+  host.services.set('userQuestions', {
+    answer: (value: unknown, callId: string, batch: unknown) => {
+      seen.push({ value, callId, batch })
+      return true
+    },
+  })
+  const batch = { answers: [{ id: 'q1', selected: ['Postgres'] }] }
+  const result = await createLocalRemote(host.ctx).userQuestions.answer('s1', 'call-1', batch)
+  assert.equal(result.ok && result.value, true)
+  assert.deepEqual(seen, [{ value: agent, callId: 'call-1', batch }])
+})
+
+test('userQuestions.answer carries a Host wire code such as REPLY_QUEUED', async () => {
+  const host = fakeHost()
+  host.services.set('agents', { get: () => ({ id: 'agent-s1' }) })
+  host.services.set('userQuestions', {
+    answer: () => {
+      const error = new Error('a reply is already queued for this question') as Error & { code: string }
+      error.code = 'REPLY_QUEUED'
+      throw error
+    },
+  })
+  const result = await createLocalRemote(host.ctx).userQuestions.answer('s1', 'call-1', { answers: [] })
+  assert.equal(result.ok, false)
+  assert.equal(result.ok === false && result.error.code, 'REPLY_QUEUED')
+})
+
+test('userQuestions.answer fails closed without a live Agent or the service', async () => {
+  const host = fakeHost()
+  const noAgent = await createLocalRemote(host.ctx).userQuestions.answer('s1', 'call-1', { answers: [] })
+  assert.equal(noAgent.ok === false && noAgent.error.message, 'session s1 has no live agent')
+  host.services.set('agents', { get: () => ({ id: 'agent-s1' }) })
+  const noService = await createLocalRemote(host.ctx).userQuestions.answer('s1', 'call-1', { answers: [] })
+  assert.equal(noService.ok === false && noService.error.message, 'this Host composes no user-questions service')
 })

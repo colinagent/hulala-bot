@@ -14,12 +14,14 @@
  * @module hulala-bot/host/local-remote
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { SessionControlFrame } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { ScheduleTask } from '../tasks.ts'
+import type { QuestionAnswerBatch } from './backend.ts'
 
-/** Envelope `bridge.ts` unwraps; failure carries a message, never a stack. */
+/** Envelope `bridge.ts` unwraps; failure carries a message and a wire code. */
 export type RemoteResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: { readonly message: string } }
+  | { readonly ok: false; readonly error: { readonly message: string; readonly code?: string } }
 
 /** The slice of `ctx.remote` this bridge actually uses. */
 export interface LocalRemote {
@@ -29,6 +31,8 @@ export interface LocalRemote {
     prompt(request: unknown, signal?: AbortSignal): Promise<RemoteResult<unknown>>
     cancel(request: unknown): Promise<RemoteResult<unknown>>
     follow(request: unknown, signal?: AbortSignal): AsyncIterable<unknown>
+    /** DSH's own Host-wide projection baseline and change feed. */
+    control(signal: AbortSignal): AsyncIterable<SessionControlFrame>
   }
   readonly workspace: {
     create(request: unknown): Promise<RemoteResult<{ workspace: { workspaceId: unknown } }>>
@@ -38,6 +42,10 @@ export interface LocalRemote {
   }
   readonly schedule: {
     catalog(): Promise<RemoteResult<readonly ScheduleTask[]>>
+  }
+  readonly userQuestions: {
+    attachWait(agent: unknown, callId: string, signal: AbortSignal): AsyncIterable<{ remainingMs: number }>
+    answer(sessionId: string, callId: string, answer: QuestionAnswerBatch): Promise<RemoteResult<boolean>>
   }
   $on(name: string, handler: (request: unknown, next: () => Promise<unknown>) => Promise<unknown>): () => void
 }
@@ -51,7 +59,18 @@ async function envelope<T>(run: () => T | Promise<T>): Promise<RemoteResult<T>> 
   try {
     return { ok: true, value: await run() }
   } catch (error) {
-    return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } }
+    const failure = error instanceof Error ? error : undefined
+    const wire = error as { code?: unknown } | null
+    // Host errors such as REPLY_QUEUED and BAD_ANSWER carry a code the card
+    // must be able to tell apart from a generic transport failure.
+    const code = wire !== null && typeof wire === 'object' && typeof wire.code === 'string' ? wire.code : undefined
+    return {
+      ok: false,
+      error: {
+        message: failure?.message ?? String(error),
+        ...(code === undefined ? {} : { code }),
+      },
+    }
   }
 }
 
@@ -63,6 +82,7 @@ interface HostServices {
     prompt(request: never, signal: AbortSignal): Promise<unknown>
     cancel(request: never): unknown
     follow(request: never, signal: AbortSignal): AsyncIterable<unknown>
+    control(signal: AbortSignal): AsyncIterable<SessionControlFrame>
   }
   workspaceController: {
     create(request: never): Promise<{ workspace: { workspaceId: unknown } }>
@@ -96,6 +116,7 @@ export function createLocalRemote(ctx: Context): LocalRemote {
       prompt: (request, signal) => envelope(() => services.sessionController.prompt(request as never, signal ?? lifetime.signal)),
       cancel: request => envelope(() => services.sessionController.cancel(request as never)),
       follow: (request, signal) => services.sessionController.follow(request as never, signal ?? lifetime.signal),
+      control: signal => services.sessionController.control(signal),
     },
     workspace: {
       create: request => envelope(() => services.workspaceController.create(request as never)),
@@ -117,6 +138,29 @@ export function createLocalRemote(ctx: Context): LocalRemote {
         const schedule = service<{ catalog(): Promise<readonly ScheduleTask[]> }>(ctx, 'schedule')
         if (schedule === undefined) throw new Error('this Host composes no schedule service')
         return schedule.catalog()
+      }),
+    },
+    userQuestions: {
+      // A service that is absent yields no frame instead of throwing: a card
+      // without a countdown is still a correct card.
+      attachWait: (agent, callId, signal) => {
+        const userQuestions = service<{
+          attachWait(agent: unknown, callId: string, signal: AbortSignal): AsyncIterable<{ remainingMs: number }>
+        }>(ctx, 'userQuestions')
+        if (userQuestions === undefined) return (async function* () {})()
+        return userQuestions.attachWait(agent, callId, signal)
+      },
+      // `answer` needs the exact live root Agent, not a Session snapshot:
+      // `assertLiveRoot` compares the registry instance by identity.
+      answer: (sessionId, callId, answer) => envelope(() => {
+        const agents = service<{ get(sessionId: string): unknown }>(ctx, 'agents')
+        const userQuestions = service<{
+          answer(agent: unknown, callId: string, batch: QuestionAnswerBatch): boolean
+        }>(ctx, 'userQuestions')
+        const agent = agents?.get(sessionId)
+        if (agent === undefined) throw new Error(`session ${sessionId} has no live agent`)
+        if (userQuestions === undefined) throw new Error('this Host composes no user-questions service')
+        return userQuestions.answer(agent, callId, answer)
       }),
     },
     $on: (name, handler) => ctx.on(name as never, handler as never) as unknown as () => void,
